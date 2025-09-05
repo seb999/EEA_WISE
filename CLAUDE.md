@@ -44,7 +44,7 @@ pip install -e .
 
 ### Core Components
 
-- `src/eea_api_service.py`: Main API service class (`EEAApiService`) that handles communication with the EEA DiscoData API
+- `src/discodata_service.py`: Main API service class (`EEAApiService`) that handles communication with the EEA DiscoData API
 - `src/api_server.py`: FastAPI web service providing REST API endpoints
 - `app.py`: Entry point to start the web service
 - `example_usage.py`: Advanced usage examples with custom queries and data analysis

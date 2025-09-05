@@ -1,128 +1,157 @@
 #!/usr/bin/env python3
 """
-Example usage of the EEA API Service with different query patterns.
+Example usage of the EEA Water Data API Service using Dremio.
 """
 
-from src.eea_api_service import EEAApiService
+from src.dremio_service import DremioApiService
 import pandas as pd
+
+
+def flatten_dremio_data(dremio_result):
+    """Transform Dremio's nested format into flat dictionaries."""
+    if not dremio_result.get("rows") or not dremio_result.get("columns"):
+        return []
+    
+    columns = dremio_result["columns"]
+    rows = dremio_result["rows"]
+    flattened_data = []
+    
+    for row_data in rows:
+        if isinstance(row_data, dict) and "row" in row_data:
+            row_values = row_data["row"]
+            flattened_row = {}
+            
+            for i, col_info in enumerate(columns):
+                col_name = col_info.get("name", f"col_{i}")
+                if i < len(row_values):
+                    value_obj = row_values[i]
+                    if isinstance(value_obj, dict) and "v" in value_obj:
+                        flattened_row[col_name] = value_obj["v"]
+                    else:
+                        flattened_row[col_name] = value_obj
+                else:
+                    flattened_row[col_name] = None
+                    
+            flattened_data.append(flattened_row)
+        elif isinstance(row_data, list):
+            flattened_row = {}
+            for i, col_info in enumerate(columns):
+                col_name = col_info.get("name", f"col_{i}")
+                if i < len(row_data):
+                    flattened_row[col_name] = row_data[i]
+                else:
+                    flattened_row[col_name] = None
+                    
+            flattened_data.append(flattened_row)
+    
+    return flattened_data
 
 
 def example_custom_query():
     """Example of executing a custom SQL query."""
-    api_service = EEAApiService()
+    dremio_service = DremioApiService()
     
-    # Custom query to get data for a specific country
+    # Custom query to get waterbase data for Germany
     custom_query = """
-    SELECT TOP 20 countryCode, countryName, gwbName, pollutantCode, pollutantName, statusValue 
-    FROM [WISE_WFD].[latest].[GWB_GroundWaterBody_GWPollutant] 
+    SELECT * FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_T_WISE6_AggregatedData"
     WHERE countryCode = 'DE'
+    LIMIT 20
     """
     
-    print("🔍 Custom Query Example:")
-    print("Getting groundwater data for Germany...")
+    print("Custom Query Example:")
+    print("Getting waterbase data for Germany...")
     
     try:
-        df = api_service.query_to_dataframe(custom_query, hits_per_page=20)
-        print(f"✅ Retrieved {len(df)} records")
-        print("\n📋 Sample data:")
-        print(df[['countryName', 'gwbName', 'pollutantName', 'statusValue']].head())
-        return df
+        result = dremio_service.execute_query(custom_query, limit=20)
+        flattened_data = flatten_dremio_data(result)
+        
+        if flattened_data:
+            df = pd.DataFrame(flattened_data)
+            print(f"Retrieved {len(df)} records")
+            print("\nSample data:")
+            print(df.head())
+            return df
+        else:
+            print("No data returned")
+            return None
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"Error: {e}")
         return None
 
 
-def example_pagination():
-    """Example of working with pagination."""
-    api_service = EEAApiService()
+def example_waterbase_data():
+    """Example of getting waterbase data."""
+    dremio_service = DremioApiService()
     
-    print("\n🔄 Pagination Example:")
-    print("Fetching multiple pages of data...")
-    
-    all_data = []
-    
-    for page in range(1, 4):  # Get first 3 pages
-        try:
-            data = api_service.get_groundwater_pollutant_data(
-                limit=10, 
-                page=page, 
-                hits_per_page=10
-            )
-            
-            if 'results' in data and data['results']:
-                all_data.extend(data['results'])
-                print(f"📄 Page {page}: {len(data['results'])} records")
-            else:
-                print(f"📄 Page {page}: No data")
-                break
-                
-        except Exception as e:
-            print(f"❌ Error on page {page}: {e}")
-            break
-    
-    if all_data:
-        df = pd.DataFrame(all_data)
-        print(f"✅ Total records collected: {len(df)}")
-        print(f"📊 Unique countries: {df['countryCode'].nunique()}")
-        return df
-    
-    return None
-
-
-def example_data_analysis():
-    """Example of basic data analysis."""
-    api_service = EEAApiService()
-    
-    print("\n📊 Data Analysis Example:")
+    print("\nWaterbase Data Example:")
+    print("Fetching waterbase data for France...")
     
     try:
-        # Get a larger dataset
-        df = api_service.get_groundwater_pollutant_dataframe(limit=50, hits_per_page=50)
+        result = dremio_service.get_waterbase_aggregated_data("FR", 10)
+        flattened_data = flatten_dremio_data(result)
         
-        if df.empty:
-            print("❌ No data available for analysis")
-            return
-            
-        print(f"📈 Dataset shape: {df.shape}")
-        
-        # Basic statistics
-        print(f"\n🌍 Countries in dataset: {df['countryCode'].nunique()}")
-        print("Top 5 countries by record count:")
-        country_counts = df['countryCode'].value_counts().head()
-        for country, count in country_counts.items():
-            country_name = df[df['countryCode'] == country]['countryName'].iloc[0]
-            print(f"  {country} ({country_name}): {count} records")
-        
-        # Pollutant analysis
-        if 'pollutantName' in df.columns:
-            print(f"\n🧪 Unique pollutants: {df['pollutantName'].nunique()}")
-            print("Top 5 pollutants:")
-            pollutant_counts = df['pollutantName'].value_counts().head()
-            for pollutant, count in pollutant_counts.items():
-                print(f"  {pollutant}: {count} records")
-        
-        # Status analysis
-        if 'statusValue' in df.columns:
-            print(f"\n📊 Status distribution:")
-            status_counts = df['statusValue'].value_counts()
-            for status, count in status_counts.items():
-                print(f"  {status}: {count} records")
-                
+        if flattened_data:
+            df = pd.DataFrame(flattened_data)
+            print(f"Retrieved {len(df)} records")
+            print("\nSample data:")
+            print(df.head())
+            return df
+        else:
+            print("No data returned")
+            return None
     except Exception as e:
-        print(f"❌ Analysis error: {e}")
+        print(f"Error: {e}")
+        return None
+
+
+def example_disaggregated_data():
+    """Example of getting disaggregated waterbase data."""
+    dremio_service = DremioApiService()
+    
+    print("\nDisaggregated Data Example:")
+    print("Getting disaggregated waterbase data for Denmark...")
+    
+    try:
+        result = dremio_service.get_waterbase_disaggregated_data("DK", 15)
+        flattened_data = flatten_dremio_data(result)
+        
+        if flattened_data:
+            df = pd.DataFrame(flattened_data)
+            print(f"Retrieved DataFrame with {len(df)} rows and {len(df.columns)} columns")
+            print("\nColumn names:")
+            print(df.columns.tolist())
+            print("\nSample data:")
+            print(df.head())
+            return df
+        else:
+            print("No data returned")
+            return None
+    except Exception as e:
+        print(f"Error: {e}")
+        return None
 
 
 def main():
     """Run all examples."""
-    print("🚀 EEA API Service - Advanced Examples")
+    print("EEA Water Data API Service Examples")
     print("=" * 50)
     
-    # Run examples
-    example_custom_query()
-    example_pagination()
-    example_data_analysis()
+    # Example 1: Custom SQL query
+    df1 = example_custom_query()
     
-    print("\n✨ Examples completed!")
+    # Example 2: Waterbase aggregated data
+    df2 = example_waterbase_data()
+    
+    # Example 3: Waterbase disaggregated data
+    df3 = example_disaggregated_data()
+    
+    print("\n" + "=" * 50)
+    print("Examples completed!")
+    
+    if df1 is not None or df2 is not None or df3 is not None:
+        print("All examples returned data successfully")
+    else:
+        print("No data was retrieved. Check your Dremio connection.")
 
 
 if __name__ == "__main__":
