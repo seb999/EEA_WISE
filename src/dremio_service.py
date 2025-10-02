@@ -473,6 +473,265 @@ class DremioApiService:
         print(f"DEBUG: Dremio latest by site query: {query}")
         return self.execute_query(query)
 
+    def get_timeseries_by_site(self,
+                              site_identifier: str,
+                              parameter_code: Optional[str] = None,
+                              start_date: Optional[str] = None,
+                              end_date: Optional[str] = None,
+                              interval: str = 'raw',
+                              include_coordinates: bool = False) -> Dict[str, Any]:
+        """
+        Get time-series data for a specific monitoring site.
+
+        Args:
+            site_identifier: Monitoring site identifier
+            parameter_code: Chemical parameter code filter (optional)
+            start_date: Start date in YYYY-MM-DD format (optional)
+            end_date: End date in YYYY-MM-DD format (optional)
+            interval: Aggregation interval ('raw', 'monthly', 'yearly')
+            include_coordinates: Whether to include GPS coordinates via JOIN
+
+        Returns:
+            Dictionary containing time-series data
+        """
+        if interval == 'raw':
+            # Raw data without aggregation
+            if include_coordinates:
+                base_query = '''
+                SELECT w.*,
+                       s.lat as coordinate_latitude,
+                       s.lon as coordinate_longitude,
+                       s.thematicIdIdentifier as coordinate_thematic_identifier,
+                       s.thematicIdIdentifierScheme as coordinate_thematic_scheme,
+                       s.monitoringSiteName as coordinate_site_name
+                FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_T_WISE6_DisaggregatedData" w
+                LEFT JOIN "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_S_WISE_SpatialObject_DerivedData" s
+                    ON w.monitoringSiteIdentifier = s.thematicIdIdentifier
+                    AND w.monitoringSiteIdentifierScheme = s.thematicIdIdentifierScheme
+                    AND s.lat IS NOT NULL
+                    AND s.lon IS NOT NULL
+                '''
+            else:
+                base_query = 'SELECT * FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_T_WISE6_DisaggregatedData"'
+
+        elif interval == 'monthly':
+            # Monthly aggregation
+            coord_join = '''
+            LEFT JOIN "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_S_WISE_SpatialObject_DerivedData" s
+                ON w.monitoringSiteIdentifier = s.thematicIdIdentifier
+                AND w.monitoringSiteIdentifierScheme = s.thematicIdIdentifierScheme
+                AND s.lat IS NOT NULL
+                AND s.lon IS NOT NULL
+            ''' if include_coordinates else ''
+
+            coord_select = '''
+                s.lat as coordinate_latitude,
+                s.lon as coordinate_longitude,
+                s.thematicIdIdentifier as coordinate_thematic_identifier,
+                s.thematicIdIdentifierScheme as coordinate_thematic_scheme,
+                s.monitoringSiteName as coordinate_site_name,
+            ''' if include_coordinates else ''
+
+            base_query = f'''
+            SELECT
+                w.monitoringSiteIdentifier,
+                w.monitoringSiteIdentifierScheme,
+                w.countryCode,
+                w.observedPropertyDeterminandCode,
+                w.observedPropertyDeterminandLabel,
+                w.resultUom,
+                DATE_TRUNC('month', w.phenomenonTimeSamplingDate) as time_period,
+                AVG(CAST(w.resultObservedValue AS DOUBLE)) as avg_value,
+                MIN(CAST(w.resultObservedValue AS DOUBLE)) as min_value,
+                MAX(CAST(w.resultObservedValue AS DOUBLE)) as max_value,
+                COUNT(*) as sample_count,
+                {coord_select}
+                'monthly' as aggregation_interval
+            FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_T_WISE6_DisaggregatedData" w
+            {coord_join}
+            '''
+
+        elif interval == 'yearly':
+            # Yearly aggregation
+            coord_join = '''
+            LEFT JOIN "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_S_WISE_SpatialObject_DerivedData" s
+                ON w.monitoringSiteIdentifier = s.thematicIdIdentifier
+                AND w.monitoringSiteIdentifierScheme = s.thematicIdIdentifierScheme
+                AND s.lat IS NOT NULL
+                AND s.lon IS NOT NULL
+            ''' if include_coordinates else ''
+
+            coord_select = '''
+                s.lat as coordinate_latitude,
+                s.lon as coordinate_longitude,
+                s.thematicIdIdentifier as coordinate_thematic_identifier,
+                s.thematicIdIdentifierScheme as coordinate_thematic_scheme,
+                s.monitoringSiteName as coordinate_site_name,
+            ''' if include_coordinates else ''
+
+            base_query = f'''
+            SELECT
+                w.monitoringSiteIdentifier,
+                w.monitoringSiteIdentifierScheme,
+                w.countryCode,
+                w.observedPropertyDeterminandCode,
+                w.observedPropertyDeterminandLabel,
+                w.resultUom,
+                w.phenomenonTimeSamplingDate_year as time_period,
+                AVG(CAST(w.resultObservedValue AS DOUBLE)) as avg_value,
+                MIN(CAST(w.resultObservedValue AS DOUBLE)) as min_value,
+                MAX(CAST(w.resultObservedValue AS DOUBLE)) as max_value,
+                COUNT(*) as sample_count,
+                {coord_select}
+                'yearly' as aggregation_interval
+            FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_T_WISE6_DisaggregatedData" w
+            {coord_join}
+            '''
+        else:
+            raise ValueError(f"Unsupported interval: {interval}")
+
+        # Build WHERE clause with proper table aliases
+        if interval == 'raw' and include_coordinates:
+            # For raw data with coordinates, use 'w.' prefix
+            where_conditions = [f"w.monitoringSiteIdentifier = '{site_identifier}'"]
+
+            if parameter_code:
+                where_conditions.append(f"w.observedPropertyDeterminandCode = '{parameter_code}'")
+
+            if start_date:
+                where_conditions.append(f"w.phenomenonTimeSamplingDate >= '{start_date}'")
+
+            if end_date:
+                where_conditions.append(f"w.phenomenonTimeSamplingDate <= '{end_date}'")
+
+        elif interval == 'raw':
+            # For raw data without coordinates, no prefix needed
+            where_conditions = [f"monitoringSiteIdentifier = '{site_identifier}'"]
+
+            if parameter_code:
+                where_conditions.append(f"observedPropertyDeterminandCode = '{parameter_code}'")
+
+            if start_date:
+                where_conditions.append(f"phenomenonTimeSamplingDate >= '{start_date}'")
+
+            if end_date:
+                where_conditions.append(f"phenomenonTimeSamplingDate <= '{end_date}'")
+        else:
+            # For aggregated data, use 'w.' prefix
+            where_conditions = [f"w.monitoringSiteIdentifier = '{site_identifier}'"]
+
+            if parameter_code:
+                where_conditions.append(f"w.observedPropertyDeterminandCode = '{parameter_code}'")
+
+            if start_date:
+                where_conditions.append(f"w.phenomenonTimeSamplingDate >= '{start_date}'")
+
+            if end_date:
+                where_conditions.append(f"w.phenomenonTimeSamplingDate <= '{end_date}'")
+
+        # Add WHERE clause
+        query = f"{base_query} WHERE {' AND '.join(where_conditions)}"
+
+        # Add GROUP BY for aggregated queries
+        if interval == 'monthly':
+            group_cols = [
+                'w.monitoringSiteIdentifier', 'w.monitoringSiteIdentifierScheme', 'w.countryCode',
+                'w.observedPropertyDeterminandCode', 'w.observedPropertyDeterminandLabel', 'w.resultUom',
+                'DATE_TRUNC(\'month\', w.phenomenonTimeSamplingDate)'
+            ]
+            if include_coordinates:
+                group_cols.extend([
+                    's.lat', 's.lon', 's.thematicIdIdentifier',
+                    's.thematicIdIdentifierScheme', 's.monitoringSiteName'
+                ])
+            query += f" GROUP BY {', '.join(group_cols)}"
+
+        elif interval == 'yearly':
+            group_cols = [
+                'w.monitoringSiteIdentifier', 'w.monitoringSiteIdentifierScheme', 'w.countryCode',
+                'w.observedPropertyDeterminandCode', 'w.observedPropertyDeterminandLabel', 'w.resultUom',
+                'w.phenomenonTimeSamplingDate_year'
+            ]
+            if include_coordinates:
+                group_cols.extend([
+                    's.lat', 's.lon', 's.thematicIdIdentifier',
+                    's.thematicIdIdentifierScheme', 's.monitoringSiteName'
+                ])
+            query += f" GROUP BY {', '.join(group_cols)}"
+
+        # Order by time descending
+        if interval == 'raw':
+            if include_coordinates:
+                query += " ORDER BY w.phenomenonTimeSamplingDate DESC"
+            else:
+                query += " ORDER BY phenomenonTimeSamplingDate DESC"
+        else:
+            query += " ORDER BY time_period DESC"
+
+        query += " LIMIT 10000"  # Reasonable limit for time-series data
+
+        print(f"DEBUG: Time-series query for site {site_identifier}: {query}")
+        return self.execute_query(query)
+
+    def get_available_parameters(self) -> Dict[str, Any]:
+        """
+        Get list of available chemical parameters with metadata.
+
+        Returns:
+            Dictionary containing available parameters
+        """
+        query = '''
+        SELECT DISTINCT
+            observedPropertyDeterminandCode,
+            observedPropertyDeterminandLabel,
+            resultUom,
+            COUNT(*) as measurement_count
+        FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_T_WISE6_DisaggregatedData"
+        GROUP BY observedPropertyDeterminandCode, observedPropertyDeterminandLabel, resultUom
+        ORDER BY observedPropertyDeterminandLabel
+        '''
+
+        print("DEBUG: Getting available parameters")
+        return self.execute_query(query)
+
+    def get_available_sites(self, country_code: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get list of available monitoring sites with coordinates.
+
+        Args:
+            country_code: Optional country filter
+
+        Returns:
+            Dictionary containing available sites
+        """
+        query = '''
+        SELECT DISTINCT
+            w.monitoringSiteIdentifier,
+            w.monitoringSiteIdentifierScheme,
+            w.countryCode,
+            s.lat as latitude,
+            s.lon as longitude,
+            s.monitoringSiteName,
+            COUNT(*) as measurement_count
+        FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_T_WISE6_DisaggregatedData" w
+        LEFT JOIN "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_S_WISE_SpatialObject_DerivedData" s
+            ON w.monitoringSiteIdentifier = s.thematicIdIdentifier
+            AND w.monitoringSiteIdentifierScheme = s.thematicIdIdentifierScheme
+        '''
+
+        if country_code:
+            query += f" WHERE w.countryCode = '{country_code.upper()}'"
+
+        query += '''
+        GROUP BY w.monitoringSiteIdentifier, w.monitoringSiteIdentifierScheme, w.countryCode,
+                 s.lat, s.lon, s.monitoringSiteName
+        ORDER BY w.countryCode, w.monitoringSiteIdentifier
+        LIMIT 1000
+        '''
+
+        print(f"DEBUG: Getting available sites{' for ' + country_code if country_code else ''}")
+        return self.execute_query(query)
+
 
     def close(self) -> None:
         """Close the session."""

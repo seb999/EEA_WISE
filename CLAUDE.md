@@ -61,13 +61,25 @@ pip install -e .
 - GPS coordinate enrichment for monitoring sites using proper EEA spatial identifiers
 - Optimized coordinate enrichment using SQL JOIN queries
 - Proper site identification using ThematicIdIdentifier + ThematicIdIdentifierScheme
+- **Time-series data retrieval** with aggregation capabilities (raw, monthly, yearly)
+- **Metadata discovery** for parameters and monitoring sites
+- **Temporal filtering** with date range queries
 
 ### Web API Endpoints
 
+#### Core Data Endpoints
 - `GET /healthCheck`: Service status and health check
 - `GET /waterbase`: Get waterbase disaggregated data with optional country filtering
 - `GET /waterbase/country/{country_code}`: Latest measurements per parameter by country
 - `GET /waterbase/site/{site_identifier}`: Latest measurements per parameter by monitoring site
+
+#### Time-Series Endpoints
+- `GET /timeseries/site/{site_identifier}`: Get time-series data for a monitoring site with aggregation options
+  - Parameters: `parameter`, `start_date`, `end_date`, `interval` (raw/monthly/yearly)
+
+#### Metadata Endpoints
+- `GET /parameters`: List all available chemical parameters with measurement counts
+- `GET /sites`: List all monitoring sites with coordinates (optional country filter)
 - `GET /coordinates/country/{country_code}`: GPS coordinates for sites in a country
 
 ### Data Sources
@@ -99,9 +111,15 @@ When running the service, visit:
 
 ### Key Methods
 
+#### Core Data Methods
 - `execute_query()`: Execute arbitrary SQL queries against Dremio
 - `get_waterbase_data()`: Fetch waterbase disaggregated data (primary method)
 - `get_waterbase_dataframe()`: Get waterbase data as pandas DataFrame
 - `query_to_dataframe()`: Convert query results to pandas DataFrame
 - `get_latest_measurements_by_country()`: Get latest measurements by country
 - `get_latest_measurements_by_site()`: Get latest measurements by monitoring site
+
+#### Time-Series Methods
+- `get_timeseries_by_site()`: Get time-series data for a monitoring site with aggregation
+- `get_available_parameters()`: Get list of chemical parameters with metadata
+- `get_available_sites()`: Get list of monitoring sites with coordinates

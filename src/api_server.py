@@ -321,6 +321,164 @@ async def get_latest_measurements_by_site(
             detail=f"Failed to fetch latest measurements for site {site_identifier}: {str(e)}"
         )
 
+@app.get("/timeseries/site/{site_identifier}")
+async def get_timeseries_by_site(
+    site_identifier: str,
+    parameter: Optional[str] = Query(None, description="Chemical parameter code (e.g., 'NO3')"),
+    start_date: Optional[str] = Query(None, description="Start date in YYYY-MM-DD format"),
+    end_date: Optional[str] = Query(None, description="End date in YYYY-MM-DD format"),
+    interval: str = Query("raw", description="Aggregation interval: 'raw', 'monthly', 'yearly'")
+) -> Dict[str, Any]:
+    """
+    Get time-series data for a specific monitoring site.
+
+    Args:
+        site_identifier: Monitoring site identifier (e.g., 'FRFR05026000')
+        parameter: Optional chemical parameter code filter
+        start_date: Optional start date filter (YYYY-MM-DD)
+        end_date: Optional end date filter (YYYY-MM-DD)
+        interval: Data aggregation interval ('raw', 'monthly', 'yearly')
+
+    Returns:
+        JSON response with time-series data for the site
+    """
+    try:
+        if not data_service:
+            raise HTTPException(
+                status_code=503,
+                detail="Data service not available"
+            )
+
+        # Validate interval
+        if interval not in ['raw', 'monthly', 'yearly']:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid interval. Must be 'raw', 'monthly', or 'yearly'"
+            )
+
+        # Get time-series data from Dremio with coordinates
+        result = data_service.get_timeseries_by_site(
+            site_identifier=site_identifier,
+            parameter_code=parameter,
+            start_date=start_date,
+            end_date=end_date,
+            interval=interval,
+            include_coordinates=True
+        )
+
+        flattened_data = flatten_dremio_data(result)
+
+        # Format coordinates for aggregated data
+        if interval != 'raw':
+            enriched_data = format_optimized_coordinates(flattened_data)
+        else:
+            enriched_data = format_optimized_coordinates(flattened_data)
+
+        return {
+            "success": True,
+            "query_type": "timeseries",
+            "site_identifier": site_identifier,
+            "filters": {
+                "parameter": parameter,
+                "start_date": start_date,
+                "end_date": end_date,
+                "interval": interval
+            },
+            "data": enriched_data,
+            "metadata": {
+                "total_records": len(enriched_data),
+                "coordinates_included": coordinate_service is not None,
+                "aggregation_interval": interval,
+                "description": f"Time-series data for site {site_identifier}"
+            }
+        }
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=str(e)
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch time-series data for site {site_identifier}: {str(e)}"
+        )
+
+@app.get("/parameters")
+async def get_available_parameters() -> Dict[str, Any]:
+    """
+    Get list of available chemical parameters with metadata.
+
+    Returns:
+        JSON response with available chemical parameters
+    """
+    try:
+        if not data_service:
+            raise HTTPException(
+                status_code=503,
+                detail="Data service not available"
+            )
+
+        result = data_service.get_available_parameters()
+        flattened_data = flatten_dremio_data(result)
+
+        return {
+            "success": True,
+            "data": flattened_data,
+            "metadata": {
+                "total_parameters": len(flattened_data),
+                "description": "Available chemical parameters in the WISE database"
+            }
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch available parameters: {str(e)}"
+        )
+
+@app.get("/sites")
+async def get_available_sites(
+    country_code: Optional[str] = Query(None, description="Filter by country code (e.g., 'DE', 'FR')")
+) -> Dict[str, Any]:
+    """
+    Get list of available monitoring sites with coordinates.
+
+    Args:
+        country_code: Optional country code filter
+
+    Returns:
+        JSON response with available monitoring sites
+    """
+    try:
+        if not data_service:
+            raise HTTPException(
+                status_code=503,
+                detail="Data service not available"
+            )
+
+        result = data_service.get_available_sites(country_code)
+        flattened_data = flatten_dremio_data(result)
+
+        return {
+            "success": True,
+            "filters": {
+                "country_code": country_code
+            },
+            "data": flattened_data,
+            "metadata": {
+                "total_sites": len(flattened_data),
+                "description": f"Available monitoring sites{' in ' + country_code if country_code else ''}"
+            }
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch available sites: {str(e)}"
+        )
+
+@app.get("/coordinates/country/{country_code}")
 async def get_coordinates_by_country(
     country_code: str,
     limit: int = Query(1000, ge=1, le=10000, description="Maximum number of results")
