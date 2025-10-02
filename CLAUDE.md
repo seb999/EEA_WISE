@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-EEA Data API Service - A Python application to retrieve groundwater pollutant data from the European Environment Agency (EEA) DiscoData SQL API.
+EEA Data API Service - A Python application to retrieve water quality disaggregated data from the European Environment Agency (EEA) WISE_SOE database via Dremio data lake.
 
 ## Development Commands
 
@@ -44,28 +44,52 @@ pip install -e .
 
 ### Core Components
 
-- `src/discodata_service.py`: Main API service class (`EEAApiService`) that handles communication with the EEA DiscoData API
+- `src/dremio_service.py`: Main Dremio API service class (`DremioApiService`) for direct Dremio data lake access
+- `src/unified_data_service.py`: Unified service that provides optimized Dremio data lake access
 - `src/api_server.py`: FastAPI web service providing REST API endpoints
+- `src/coordinate_service.py`: Service for enriching data with GPS coordinates
 - `app.py`: Entry point to start the web service
 - `example_usage.py`: Advanced usage examples with custom queries and data analysis
-- `requirements.txt`: Project dependencies (requests, pandas, python-dotenv, fastapi, uvicorn)
+- `requirements.txt`: Project dependencies (requests, pandas, python-dotenv, fastapi, uvicorn, sqlite3)
 
 ### API Service Features
 
-- Execute custom SQL queries against EEA databases
-- Retrieve groundwater pollutant data from WISE_WFD database  
+- Execute custom SQL queries against Dremio data lake
+- Retrieve water quality disaggregated data from WISE_SOE database
 - Convert results to pandas DataFrames for analysis
-- Handle pagination and error management
-- Configurable request parameters (page size, email, schema)
+- Handle authentication and error management
+- GPS coordinate enrichment for monitoring sites using proper EEA spatial identifiers
+- Optimized coordinate enrichment using SQL JOIN queries
+- Proper site identification using ThematicIdIdentifier + ThematicIdIdentifierScheme
 
 ### Web API Endpoints
 
-- `GET /`: API information and available endpoints
-- `GET /health`: Health check endpoint
-- `GET /groundwater`: Get groundwater data with optional country filtering
-- `GET /groundwater/countries`: List available countries
-- `GET /groundwater/pollutants`: List pollutants (optionally by country)
-- `GET /groundwater/summary`: Get summary statistics
+- `GET /healthCheck`: Service status and health check
+- `GET /waterbase`: Get waterbase disaggregated data with optional country filtering
+- `GET /waterbase/country/{country_code}`: Latest measurements per parameter by country
+- `GET /waterbase/site/{site_identifier}`: Latest measurements per parameter by monitoring site
+- `GET /coordinates/country/{country_code}`: GPS coordinates for sites in a country
+
+### Data Sources
+
+The system uses the following Dremio tables:
+
+**Main Data Table:**
+```
+"Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_T_WISE6_DisaggregatedData"
+```
+
+**Spatial Coordinates Table:**
+```
+"Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_S_WISE_SpatialObject_DerivedData"
+```
+
+**Site Identification:**
+Sites are properly identified using the combination of:
+- `ThematicIdIdentifier`: The site identifier
+- `ThematicIdIdentifierScheme`: The identifier scheme (euMonitoringSiteCode, eionetMonitoringSiteCode, etc.)
+
+This ensures accurate coordinate matching and prevents identifier conflicts between different schemes.
 
 ### API Documentation
 
@@ -75,7 +99,9 @@ When running the service, visit:
 
 ### Key Methods
 
-- `execute_query()`: Execute arbitrary SQL queries
-- `get_groundwater_pollutant_data()`: Fetch specific groundwater data
+- `execute_query()`: Execute arbitrary SQL queries against Dremio
+- `get_waterbase_data()`: Fetch waterbase disaggregated data (primary method)
+- `get_waterbase_dataframe()`: Get waterbase data as pandas DataFrame
 - `query_to_dataframe()`: Convert query results to pandas DataFrame
-- `get_groundwater_pollutant_dataframe()`: Get groundwater data as DataFrame
+- `get_latest_measurements_by_country()`: Get latest measurements by country
+- `get_latest_measurements_by_site()`: Get latest measurements by monitoring site

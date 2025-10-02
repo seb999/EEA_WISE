@@ -12,21 +12,25 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="EEA WISE Data API",
-    description="API service to retrieve water quality data from the European Environment Agency (EEA) WISE_SOE database using Dremio data lake",
-    version="3.0.0"
+    description="API service to retrieve water quality disaggregated data from the European Environment Agency (EEA) WISE_SOE database using Dremio data lake",
+    version="3.1.0"
 )
 
-# Initialize Dremio service directly
+# Initialize Dremio Data service
 try:
-    dremio_service = DremioApiService()
-    logger.info("✓ Dremio service initialized successfully")
+    data_service = DremioApiService()
+    service_info = data_service.get_service_info()
+    logger.info(f"✓ Data service initialized successfully: {service_info['active_service']} ({service_info['service_class']})")
 except Exception as e:
-    logger.error(f"✗ Failed to initialize Dremio service: {e}")
-    dremio_service = None
+    logger.error(f"✗ Failed to initialize data service: {e}")
+    data_service = None
 
-# Initialize Coordinate service
+# Initialize Coordinate service with shared Dremio service
 try:
-    coordinate_service = CoordinateService()
+    if data_service:
+        coordinate_service = CoordinateService(data_service)
+    else:
+        coordinate_service = CoordinateService()
     logger.info("✓ Coordinate service initialized successfully")
 except Exception as e:
     logger.error(f"✗ Failed to initialize Coordinate service: {e}")
@@ -76,137 +80,144 @@ def flatten_dremio_data(dremio_result: Dict[str, Any]) -> list:
     return flattened_data
 
 
+def format_optimized_coordinates(data: list) -> list:
+    """
+    Format data that already includes coordinates from JOIN query.
+    Transforms coordinate columns into structured coordinate objects.
+    """
+    if not data:
+        return data
+
+    formatted_data = []
+    for item in data:
+        # Create new ordered dict with formatted coordinates
+        formatted_item = {}
+
+        for key, value in item.items():
+            # Skip coordinate column fields as we'll format them into coordinates object
+            if key.startswith('coordinate_'):
+                continue
+
+            formatted_item[key] = value
+
+            # Insert coordinates right after countryCode
+            if key == 'countryCode':
+                # Check if we have coordinate data from the JOIN
+                lat = item.get('coordinate_latitude')
+                lon = item.get('coordinate_longitude')
+
+                if lat is not None and lon is not None:
+                    formatted_item['coordinates'] = {
+                        'latitude': lat,
+                        'longitude': lon,
+                        'thematic_identifier': item.get('coordinate_thematic_identifier'),
+                        'thematic_identifier_scheme': item.get('coordinate_thematic_scheme'),
+                        'monitoring_site_name': item.get('coordinate_site_name'),
+                        'match_confidence': 1.0,  # High confidence as this is a direct JOIN match
+                        'source': 'Waterbase_S_WISE_SpatialObject_DerivedData'
+                    }
+                else:
+                    # No coordinates found in JOIN
+                    formatted_item['coordinates'] = None
+
+        formatted_data.append(formatted_item)
+
+    return formatted_data
+
 def enrich_with_coordinates(data: list) -> list:
     """
-    Enrich monitoring site data with GPS coordinates placed after countryCode.
+    Enrich monitoring site data with GPS coordinates from spatial object table.
+    Coordinates are placed after countryCode and use ThematicIdIdentifier matching.
     """
     if not coordinate_service or not data:
         return data
-    
+
     enriched_data = []
     for item in data:
         site_id = item.get('monitoringSiteIdentifier')
         country_code = item.get('countryCode')
-        
+
         # Create new ordered dict with coordinates after countryCode
         enriched_item = {}
-        
+
         for key, value in item.items():
             enriched_item[key] = value
-            
+
             # Insert coordinates right after countryCode
             if key == 'countryCode' and site_id and country_code:
                 coords = coordinate_service.get_coordinates_for_site(site_id, country_code)
                 if coords:
-                    enriched_item['coordinates'] = coords
-        
+                    # Format coordinates with spatial object information
+                    enriched_item['coordinates'] = {
+                        'latitude': coords.get('latitude'),
+                        'longitude': coords.get('longitude'),
+                        'thematic_identifier': coords.get('thematic_identifier'),
+                        'thematic_identifier_scheme': coords.get('thematic_identifier_scheme'),
+                        'monitoring_site_identifier': coords.get('monitoring_site_identifier'),
+                        'monitoring_site_name': coords.get('monitoring_site_name'),
+                        'match_confidence': coords.get('match_confidence', 'unknown'),
+                        'original_query_site': coords.get('original_query_site'),
+                        'source': 'Waterbase_S_WISE_SpatialObject_DerivedData'
+                    }
+
         enriched_data.append(enriched_item)
-    
+
     return enriched_data
 
 @app.get("/healthCheck")
 async def service_status():
-    """Get status of Dremio and coordinate services."""
-    
+    """Get status of data and coordinate services."""
+
+    service_info = data_service.get_service_info() if data_service else {}
+
     return {
         "service_status": {
-            "dremio_available": dremio_service is not None,
+            "data_service_available": data_service is not None,
             "coordinates_available": coordinate_service is not None,
-            "service": "dremio_with_coordinates"
+            "active_data_service": service_info.get('active_service', 'none'),
+            "configured_mode": service_info.get('configured_mode', 'unknown')
         },
-        "api_version": "3.0.0",
+        "api_version": "3.1.0",
         "features": {
-            "dremio_connection": dremio_service is not None,
+            "data_connection": data_service is not None,
             "coordinate_service": coordinate_service is not None,
-            "service": "dremio_with_coordinates"
+            "switchable_backends": True,
+            "service_info": service_info
         },
     }
 
 @app.get("/waterbase")
 async def get_waterbase_data(
-    country: Optional[str] = Query(None, description="Filter by country code (e.g., 'DE', 'DK', 'FI')"),
-    limit: int = Query(1000, ge=1, le=300000, description="Maximum number of records to return")
-) -> Dict[str, Any]:
-    """
-    Get waterbase aggregated data.
-    
-    Args:
-        country: Optional country code filter (e.g., 'DE' for Germany)
-        limit: Maximum number of records to return (1-300000)
-        
-    Returns:
-        JSON response with waterbase data
-    """
-    try:
-        if not dremio_service:
-            raise HTTPException(
-                status_code=503,
-                detail="Dremio service not available"
-            )
-            
-        # Get aggregated data directly from Dremio
-        result = dremio_service.get_waterbase_aggregated_data(country, limit)
-        flattened_data = flatten_dremio_data(result)
-        
-        # Enrich with coordinates
-        enriched_data = enrich_with_coordinates(flattened_data)
-        
-        return {
-            "success": True,
-            "data": enriched_data,
-            "filters": {
-                "country": country,
-                "limit": limit
-            },
-            "metadata": {
-                "total_records": len(enriched_data),
-                "data_type": "aggregated",
-                "coordinates_included": coordinate_service is not None,
-                "columns": result.get("columns", [])
-            }
-        }
-        
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to fetch waterbase data: {str(e)}"
-        )
-
-@app.get("/waterbase/latest/disaggregated")
-async def get_waterbase_disaggregated_data(
-    country: Optional[str] = Query(None, description="Filter by country code (e.g., 'DE', 'DK', 'FI')"),
+    country_code: Optional[str] = Query(None, description="Filter by country code (e.g., 'DE', 'DK', 'FI')"),
     limit: int = Query(1000, ge=1, le=300000, description="Maximum number of records to return")
 ) -> Dict[str, Any]:
     """
     Get waterbase disaggregated data.
-    Note: Falls back to aggregated data if disaggregated data is not available.
-    
+
     Args:
         country: Optional country code filter (e.g., 'DE' for Germany)
         limit: Maximum number of records to return (1-300000)
-        
+
     Returns:
         JSON response with waterbase disaggregated data
     """
     try:
-        if not dremio_service:
+        if not data_service:
             raise HTTPException(
                 status_code=503,
-                detail="Dremio service not available"
+                detail="Data service not available"
             )
-            
-        # Get disaggregated data directly from Dremio
-        result = dremio_service.get_waterbase_disaggregated_data(country, limit)
+
+        # Get disaggregated data from Dremio with optimized coordinate inclusion
+        result = data_service.get_waterbase_data(country_code, limit, include_coordinates=True)
         flattened_data = flatten_dremio_data(result)
-        
-        # Enrich with coordinates
-        enriched_data = enrich_with_coordinates(flattened_data)
-        
+        enriched_data = format_optimized_coordinates(flattened_data)
+
         return {
             "success": True,
             "data": enriched_data,
             "filters": {
-                "country": country,
+                "country_code": country_code,
                 "limit": limit
             },
             "metadata": {
@@ -216,14 +227,15 @@ async def get_waterbase_disaggregated_data(
                 "columns": result.get("columns", [])
             }
         }
-        
+
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to fetch waterbase disaggregated data: {str(e)}"
+            detail=f"Failed to fetch waterbase data: {str(e)}"
         )
 
-@app.get("/waterbase/latest/country/{country_code}")
+
+@app.get("/waterbase/country/{country_code}")
 async def get_latest_measurements_by_country(
     country_code: str
 ) -> Dict[str, Any]:
@@ -237,23 +249,22 @@ async def get_latest_measurements_by_country(
         JSON response with latest measurements per parameter for the country
     """
     try:
-        if not dremio_service:
+        if not data_service:
             raise HTTPException(
                 status_code=503,
-                detail="Dremio service not available"
+                detail="Data service not available"
             )
-            
-        result = dremio_service.get_latest_measurements_by_country(country_code)
+
+        # Get latest measurements by country from Dremio with optimized coordinate inclusion
+        result = data_service.get_latest_measurements_by_country(country_code, include_coordinates=True)
         flattened_data = flatten_dremio_data(result)
-        
-        # Enrich with coordinates
-        enriched_data = enrich_with_coordinates(flattened_data)
+        enriched_data = format_optimized_coordinates(flattened_data)
         
         return {
             "success": True,
             "query_type": "latest_by_country",
             "country_code": country_code,
-            "source": "Dremio Data Lake",
+            "source": data_service.get_service_info().get('active_service', 'unknown') if data_service else 'unknown',
             "data": enriched_data,
             "metadata": {
                 "total_records": len(enriched_data),
@@ -268,37 +279,34 @@ async def get_latest_measurements_by_country(
             detail=f"Failed to fetch latest measurements for country {country_code}: {str(e)}"
         )
 
-@app.get("/waterbase/latest/site/{site_identifier}")
+@app.get("/waterbase/site/{site_identifier}")
 async def get_latest_measurements_by_site(
     site_identifier: str
 ) -> Dict[str, Any]:
     """
     Get the latest measurement for each chemical parameter by monitoring site.
-    
     Args:
         site_identifier: Monitoring site identifier (e.g., 'FRFR05026000')
-        
     Returns:
         JSON response with latest measurements per parameter for the site
     """
     try:
-        if not dremio_service:
+        if not data_service:
             raise HTTPException(
                 status_code=503,
-                detail="Dremio service not available"
+                detail="Data service not available"
             )
-            
-        result = dremio_service.get_latest_measurements_by_site(site_identifier)
+
+        # Get latest measurements by site from Dremio with optimized coordinate inclusion
+        result = data_service.get_latest_measurements_by_site(site_identifier, include_coordinates=True)
         flattened_data = flatten_dremio_data(result)
-        
-        # Enrich with coordinates
-        enriched_data = enrich_with_coordinates(flattened_data)
+        enriched_data = format_optimized_coordinates(flattened_data)
         
         return {
             "success": True,
             "query_type": "latest_by_site",
             "site_identifier": site_identifier,
-            "source": "Dremio Data Lake",
+            "source": data_service.get_service_info().get('active_service', 'unknown') if data_service else 'unknown',
             "data": enriched_data,
             "metadata": {
                 "total_records": len(enriched_data),
@@ -313,88 +321,17 @@ async def get_latest_measurements_by_site(
             detail=f"Failed to fetch latest measurements for site {site_identifier}: {str(e)}"
         )
 
-@app.get("/coordinates/stats")
-async def get_coordinate_stats() -> Dict[str, Any]:
-    """
-    Get statistics about the coordinate database.
-    
-    Returns:
-        JSON response with database statistics
-    """
-    try:
-        if not coordinate_service:
-            raise HTTPException(
-                status_code=503,
-                detail="Coordinate service not available"
-            )
-            
-        stats = coordinate_service.get_database_stats()
-        
-        return {
-            "success": True,
-            "data": stats
-        }
-        
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to fetch coordinate statistics: {str(e)}"
-        )
-
-@app.get("/coordinates/search")
-async def search_coordinates(
-    q: str = Query(..., description="Search term for site names or codes"),
-    limit: int = Query(100, ge=1, le=1000, description="Maximum number of results")
-) -> Dict[str, Any]:
-    """
-    Search for coordinates by site name or code.
-    
-    Args:
-        q: Search term
-        limit: Maximum number of results to return
-        
-    Returns:
-        JSON response with matching coordinates
-    """
-    try:
-        if not coordinate_service:
-            raise HTTPException(
-                status_code=503,
-                detail="Coordinate service not available"
-            )
-            
-        results = coordinate_service.search_coordinates(q, limit)
-        
-        return {
-            "success": True,
-            "query": q,
-            "data": results,
-            "metadata": {
-                "total_results": len(results),
-                "search_term": q
-            }
-        }
-        
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to search coordinates: {str(e)}"
-        )
-
-@app.get("/coordinates/country/{country_code}")
 async def get_coordinates_by_country(
     country_code: str,
     limit: int = Query(1000, ge=1, le=10000, description="Maximum number of results")
 ) -> Dict[str, Any]:
     """
-    Get all coordinates for a specific country.
-    
+    Get all sites with coordinates for a specific country from spatial object table.
     Args:
         country_code: Country code (e.g., 'DE', 'FR')
         limit: Maximum number of results to return
-        
     Returns:
-        JSON response with coordinates for the country
+        JSON response with coordinates from Waterbase_S_WISE_SpatialObject_DerivedData
     """
     try:
         if not coordinate_service:
@@ -402,24 +339,25 @@ async def get_coordinates_by_country(
                 status_code=503,
                 detail="Coordinate service not available"
             )
-            
+
         results = coordinate_service.get_coordinates_by_country(country_code.upper(), limit)
-        
+
         return {
             "success": True,
             "country_code": country_code.upper(),
             "data": results,
             "metadata": {
-                "total_results": len(results)
+                "total_results": len(results),
+                "data_source": "Waterbase_S_WISE_SpatialObject_DerivedData",
+                "description": f"GPS coordinates for monitoring sites in {country_code.upper()} using ThematicIdIdentifier matching"
             }
         }
-        
+
     except Exception as e:
         raise HTTPException(
             status_code=500,
             detail=f"Failed to fetch coordinates for country {country_code}: {str(e)}"
         )
-
 
 def start_server(host: str = "127.0.0.1", port: int = 8000):
     """Start the FastAPI server."""

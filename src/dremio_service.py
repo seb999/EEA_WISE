@@ -59,9 +59,19 @@ class DremioApiService:
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'EEA-Dremio-Client/1.0',
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            'Connection': 'keep-alive'
         })
-        
+
+        # Configure session for better connection handling
+        adapter = requests.adapters.HTTPAdapter(
+            max_retries=3,
+            pool_connections=10,
+            pool_maxsize=10
+        )
+        self.session.mount('http://', adapter)
+        self.session.mount('https://', adapter)
+
         # Disable SSL verification if ssl is False
         if not self.ssl:
             self.session.verify = False
@@ -81,26 +91,38 @@ class DremioApiService:
         }
         
         try:
+            print(f"DEBUG: Authenticating with {auth_url}")
             response = self.session.post(
-                auth_url, 
-                json=auth_data, 
+                auth_url,
+                json=auth_data,
                 timeout=self.timeout
             )
+
+            print(f"DEBUG: Auth response status: {response.status_code}")
             response.raise_for_status()
-            
+
             auth_result = response.json()
             self.token = auth_result.get('token')
-            
+
             if self.token:
                 self.session.headers.update({
                     'Authorization': f'_dremio{self.token}'
                 })
+                print("DEBUG: Authentication successful")
             else:
                 raise Exception("No token received from authentication")
-                
+
         except requests.exceptions.RequestException as e:
             raise Exception(f"Authentication failed: {str(e)}")
-    
+
+    def get_service_info(self) -> Dict[str, Any]:
+        """Get information about the Dremio service."""
+        return {
+            "configured_mode": "dremio",
+            "active_service": "dremio",
+            "service_class": self.__class__.__name__
+        }
+
     def execute_query(self, 
                      sql_query: str, 
                      limit: Optional[int] = None) -> Dict[str, Any]:
@@ -121,36 +143,45 @@ class DremioApiService:
         # Debug: Print the final query being executed
         print(f"DEBUG: Final SQL query: {sql_query}")
         
-        query_url = urljoin(self.server_auth, '/apiv2/sql')
+        query_url = urljoin(self.server, '/apiv2/sql')
         
         query_data = {
             "sql": sql_query
         }
         
         try:
+            # Use longer timeout for queries (3x the default timeout)
+            query_timeout = self.timeout * 3
+            print(f"DEBUG: Executing query with timeout: {query_timeout}s")
+
             response = self.session.post(
                 query_url,
                 json=query_data,
-                timeout=self.timeout
+                timeout=query_timeout,
+                stream=False
             )
+
+            print(f"DEBUG: Response status: {response.status_code}")
+
             if not response.ok:
                 print(f"DEBUG: Dremio error response: {response.status_code} - {response.text}")
-            response.raise_for_status()
+                # Try to parse error message from response
+                try:
+                    error_detail = response.json()
+                    error_msg = error_detail.get('errorMessage', response.text)
+                except:
+                    error_msg = response.text
+                raise Exception(f"Dremio API error {response.status_code}: {error_msg}")
+
             result = response.json()
-            
-            # Debug: Print number of rows returned and first few country codes
-            # if 'rows' in result and result['rows']:
-            #     print(f"DEBUG: Query returned {len(result['rows'])} rows")
-            #     # Try to find country codes in the first few rows
-            #     for i, row in enumerate(result['rows'][:3]):
-            #         if isinstance(row, list) and len(row) > 0:
-            #             print(f"DEBUG: Row {i}: {row[:5]}...")  # Print first 5 columns
-            #         elif isinstance(row, dict):
-            #             country_val = row.get('countryCode') or row.get('CountryCode') or row.get('COUNTRYCODE')
-            #             print(f"DEBUG: Row {i} countryCode: {country_val}")
-            
+            print(f"DEBUG: Query executed successfully, processing results...")
+
             return result
-            
+
+        except requests.exceptions.Timeout as e:
+            raise Exception(f"Query execution timed out after {query_timeout}s: {str(e)}")
+        except requests.exceptions.ConnectionError as e:
+            raise Exception(f"Connection error to Dremio server: {str(e)}")
         except requests.exceptions.RequestException as e:
             raise Exception(f"Query execution failed: {str(e)}")
     
@@ -202,91 +233,97 @@ class DremioApiService:
             print(f"Error executing query: {str(e)}")
             return pd.DataFrame()
     
-    def get_waterbase_aggregated_data(self, 
-                                    country_code: Optional[str] = None,
-                                    limit: int = 1000) -> Dict[str, Any]:
+    def get_waterbase_data(self,
+                         country_code: Optional[str] = None,
+                         limit: int = 1000,
+                         include_coordinates: bool = False) -> Dict[str, Any]:
         """
-        Get waterbase aggregated data from Dremio.
-        
+        Get waterbase disaggregated data from Dremio with optional coordinate enrichment.
+
         Args:
             country_code: ISO country code filter (optional)
             limit: Maximum number of records to return
-            
-        Returns:
-            Dictionary containing waterbase data
-        """
-        base_query = 'SELECT * FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_T_WISE6_AggregatedData"'
-        
-        if country_code:
-            # Normalize country code to uppercase and add debugging
-            country_code = country_code.upper()
-            query = f"""
-            {base_query}
-            WHERE countryCode = '{country_code}'
-            ORDER BY phenomenonTimeReferenceYear DESC
-            LIMIT {limit}
-            """
-            print(f"DEBUG: Executing aggregated query with country filter: {country_code}")
-        else:
-            query = f"""
-            {base_query}
-            ORDER BY phenomenonTimeReferenceYear DESC
-            LIMIT {limit}
-            """
-        
-        return self.execute_query(query, None)  # Don't pass limit to execute_query since it's in the query
-    
-    def get_waterbase_disaggregated_data(self, 
-                                       country_code: Optional[str] = None,
-                                       limit: int = 1000) -> Dict[str, Any]:
-        """
-        Get waterbase disaggregated data from Dremio.
-        
-        Args:
-            country_code: ISO country code filter (optional)
-            limit: Maximum number of records to return
-            
+            include_coordinates: Whether to include GPS coordinates via JOIN
+
         Returns:
             Dictionary containing waterbase disaggregated data
         """
-        base_query = 'SELECT * FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_T_WISE6_DisaggregatedData"'
-        
+        if include_coordinates:
+            # Optimized query with coordinate JOIN
+            base_query = '''
+            SELECT
+                w.*,
+                s.lat as coordinate_latitude,
+                s.lon as coordinate_longitude,
+                s.thematicIdIdentifier as coordinate_thematic_identifier,
+                s.thematicIdIdentifierScheme as coordinate_thematic_scheme,
+                s.monitoringSiteName as coordinate_site_name
+            FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_T_WISE6_DisaggregatedData" w
+            LEFT JOIN "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_S_WISE_SpatialObject_DerivedData" s
+                ON w.monitoringSiteIdentifier = s.thematicIdIdentifier
+                AND w.monitoringSiteIdentifierScheme = s.thematicIdIdentifierScheme
+                AND s.lat IS NOT NULL
+                AND s.lon IS NOT NULL
+            '''
+        else:
+            base_query = 'SELECT * FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_T_WISE6_DisaggregatedData"'
+
         if country_code:
             # Normalize country code to uppercase and add debugging
             country_code = country_code.upper()
             query = f"""
             {base_query}
-            WHERE countryCode = '{country_code}'
+            WHERE {"w." if include_coordinates else ""}countryCode = '{country_code}'
+            ORDER BY {"w." if include_coordinates else ""}phenomenonTimeSamplingDate DESC
             LIMIT {limit}
             """
             print(f"DEBUG: Executing disaggregated query with country filter: {country_code}")
         else:
             query = f"""
             {base_query}
+            ORDER BY {"w." if include_coordinates else ""}phenomenonTimeSamplingDate DESC
             LIMIT {limit}
             """
-        
+
         return self.execute_query(query, None)  # Don't pass limit to execute_query since it's in the query
     
-    def get_waterbase_aggregated_dataframe(self,
-                                         country_code: Optional[str] = None,
-                                         limit: int = 1000) -> pd.DataFrame:
+    def get_waterbase_disaggregated_data(self,
+                                       country_code: Optional[str] = None,
+                                       limit: int = 1000) -> Dict[str, Any]:
         """
-        Get waterbase aggregated data as pandas DataFrame.
-        
+        Get waterbase disaggregated data from Dremio.
+        (Alias for get_waterbase_data for backward compatibility)
+
         Args:
             country_code: ISO country code filter (optional)
             limit: Maximum number of records to return
-            
+
         Returns:
-            pandas DataFrame containing waterbase data
+            Dictionary containing waterbase disaggregated data
+        """
+        return self.get_waterbase_data(country_code, limit)
+    
+    def get_waterbase_dataframe(self,
+                              country_code: Optional[str] = None,
+                              limit: int = 1000,
+                              include_coordinates: bool = False) -> pd.DataFrame:
+        """
+        Get waterbase disaggregated data as pandas DataFrame with optional coordinate enrichment.
+
+        Args:
+            country_code: ISO country code filter (optional)
+            limit: Maximum number of records to return
+            include_coordinates: Whether to include GPS coordinates via JOIN
+
+        Returns:
+            pandas DataFrame containing waterbase disaggregated data
         """
         try:
-            result = self.get_waterbase_aggregated_data(country_code, limit)
-            
+            result = self.get_waterbase_data(country_code, limit, include_coordinates)
+
             if 'rows' in result and result['rows']:
                 columns = [col['name'] for col in result.get('columns', [])]
-                
+
                 # Handle Dremio response format: rows are {'row': [data]} and values are {'v': actual_value}
                 data_rows = []
                 for row in result['rows']:
@@ -303,11 +340,11 @@ class DremioApiService:
                         data_rows.append(row)
                     else:
                         data_rows.append(row)
-                
+
                 return pd.DataFrame(data_rows, columns=columns)
             else:
                 return pd.DataFrame()
-                
+
         except Exception as e:
             print(f"Error getting waterbase data: {str(e)}")
             return pd.DataFrame()
@@ -317,99 +354,126 @@ class DremioApiService:
                                             limit: int = 1000) -> pd.DataFrame:
         """
         Get waterbase disaggregated data as pandas DataFrame.
-        
+        (Alias for get_waterbase_dataframe for backward compatibility)
+
         Args:
             country_code: ISO country code filter (optional)
             limit: Maximum number of records to return
-            
+
         Returns:
             pandas DataFrame containing waterbase disaggregated data
         """
-        try:
-            result = self.get_waterbase_disaggregated_data(country_code, limit)
-            
-            if 'rows' in result and result['rows']:
-                columns = [col['name'] for col in result.get('columns', [])]
-                
-                # Handle Dremio response format: rows are {'row': [data]} and values are {'v': actual_value}
-                data_rows = []
-                for row in result['rows']:
-                    if isinstance(row, dict) and 'row' in row:
-                        # Extract actual values from {'v': value} format
-                        clean_row = []
-                        for cell in row['row']:
-                            if isinstance(cell, dict) and 'v' in cell:
-                                clean_row.append(cell['v'])
-                            else:
-                                clean_row.append(cell)
-                        data_rows.append(clean_row)
-                    elif isinstance(row, list):
-                        data_rows.append(row)
-                    else:
-                        data_rows.append(row)
-                
-                return pd.DataFrame(data_rows, columns=columns)
-            else:
-                return pd.DataFrame()
-                
-        except Exception as e:
-            print(f"Error getting waterbase disaggregated data: {str(e)}")
-            return pd.DataFrame()
+        return self.get_waterbase_dataframe(country_code, limit)
     
-    def get_latest_measurements_by_country(self, country_code: str) -> Dict[str, Any]:
+    def get_latest_measurements_by_country(self, country_code: str, include_coordinates: bool = False) -> Dict[str, Any]:
         """
-        Get the latest measurement for each chemical parameter by country.
-        
+        Get the latest measurement for each chemical parameter by country with optional coordinates.
+
         Args:
             country_code: Country code (e.g., 'FR', 'DE')
-            
+            include_coordinates: Whether to include GPS coordinates via JOIN
+
         Returns:
             Dictionary containing the latest measurements per parameter
         """
-        query = f'''
-        SELECT t1.* FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_T_WISE6_AggregatedData" t1
-        INNER JOIN (
-            SELECT observedPropertyDeterminandCode, 
-                   MAX(phenomenonTimeReferenceYear) as max_year
-            FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_T_WISE6_AggregatedData"
-            WHERE countryCode = '{country_code}'
-            GROUP BY observedPropertyDeterminandCode
-        ) t2 ON t1.observedPropertyDeterminandCode = t2.observedPropertyDeterminandCode 
-           AND t1.phenomenonTimeReferenceYear = t2.max_year
-        WHERE t1.countryCode = '{country_code}'
-        ORDER BY t1.observedPropertyDeterminandLabel
-        '''
-        
+        if include_coordinates:
+            query = f'''
+            SELECT t1.*,
+                   s.lat as coordinate_latitude,
+                   s.lon as coordinate_longitude,
+                   s.thematicIdIdentifier as coordinate_thematic_identifier,
+                   s.thematicIdIdentifierScheme as coordinate_thematic_scheme,
+                   s.monitoringSiteName as coordinate_site_name
+            FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_T_WISE6_DisaggregatedData" t1
+            INNER JOIN (
+                SELECT observedPropertyDeterminandCode,
+                       MAX(phenomenonTimeSamplingDate_year) as max_year
+                FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_T_WISE6_DisaggregatedData"
+                WHERE countryCode = '{country_code}'
+                GROUP BY observedPropertyDeterminandCode
+            ) t2 ON t1.observedPropertyDeterminandCode = t2.observedPropertyDeterminandCode
+               AND t1.phenomenonTimeSamplingDate_year = t2.max_year
+            LEFT JOIN "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_S_WISE_SpatialObject_DerivedData" s
+                ON t1.monitoringSiteIdentifier = s.thematicIdIdentifier
+                AND t1.monitoringSiteIdentifierScheme = s.thematicIdIdentifierScheme
+                AND s.lat IS NOT NULL
+                AND s.lon IS NOT NULL
+            WHERE t1.countryCode = '{country_code}'
+            ORDER BY t1.phenomenonTimeSamplingDate DESC
+            '''
+        else:
+            query = f'''
+            SELECT t1.* FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_T_WISE6_DisaggregatedData" t1
+            INNER JOIN (
+                SELECT observedPropertyDeterminandCode,
+                       MAX(phenomenonTimeSamplingDate_year) as max_year
+                FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_T_WISE6_DisaggregatedData"
+                WHERE countryCode = '{country_code}'
+                GROUP BY observedPropertyDeterminandCode
+            ) t2 ON t1.observedPropertyDeterminandCode = t2.observedPropertyDeterminandCode
+               AND t1.phenomenonTimeSamplingDate_year = t2.max_year
+            WHERE t1.countryCode = '{country_code}'
+            ORDER BY t1.phenomenonTimeSamplingDate DESC
+            '''
+
         print(f"DEBUG: Dremio latest by country query: {query}")
         return self.execute_query(query)
     
-    def get_latest_measurements_by_site(self, site_identifier: str) -> Dict[str, Any]:
+    def get_latest_measurements_by_site(self, site_identifier: str, include_coordinates: bool = False) -> Dict[str, Any]:
         """
-        Get the latest measurement for each chemical parameter by monitoring site.
-        
+        Get the latest measurement for each chemical parameter by monitoring site with optional coordinates.
+
         Args:
             site_identifier: Monitoring site identifier (e.g., 'FRFR05026000')
-            
+            include_coordinates: Whether to include GPS coordinates via JOIN
+
         Returns:
             Dictionary containing the latest measurements per parameter for the site
         """
-        query = f'''
-        SELECT t1.* FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_T_WISE6_AggregatedData" t1
-        INNER JOIN (
-            SELECT observedPropertyDeterminandCode, 
-                   MAX(phenomenonTimeReferenceYear) as max_year
-            FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_T_WISE6_AggregatedData"
-            WHERE monitoringSiteIdentifier = '{site_identifier}'
-            GROUP BY observedPropertyDeterminandCode
-        ) t2 ON t1.observedPropertyDeterminandCode = t2.observedPropertyDeterminandCode 
-           AND t1.phenomenonTimeReferenceYear = t2.max_year
-        WHERE t1.monitoringSiteIdentifier = '{site_identifier}'
-        ORDER BY t1.observedPropertyDeterminandLabel
-        '''
-        
+        if include_coordinates:
+            query = f'''
+            SELECT t1.*,
+                   s.lat as coordinate_latitude,
+                   s.lon as coordinate_longitude,
+                   s.thematicIdIdentifier as coordinate_thematic_identifier,
+                   s.thematicIdIdentifierScheme as coordinate_thematic_scheme,
+                   s.monitoringSiteName as coordinate_site_name
+            FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_T_WISE6_DisaggregatedData" t1
+            INNER JOIN (
+                SELECT observedPropertyDeterminandCode,
+                       MAX(phenomenonTimeSamplingDate_year) as max_year
+                FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_T_WISE6_DisaggregatedData"
+                WHERE monitoringSiteIdentifier = '{site_identifier}'
+                GROUP BY observedPropertyDeterminandCode
+            ) t2 ON t1.observedPropertyDeterminandCode = t2.observedPropertyDeterminandCode
+               AND t1.phenomenonTimeSamplingDate_year = t2.max_year
+            LEFT JOIN "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_S_WISE_SpatialObject_DerivedData" s
+                ON t1.monitoringSiteIdentifier = s.thematicIdIdentifier
+                AND t1.monitoringSiteIdentifierScheme = s.thematicIdIdentifierScheme
+                AND s.lat IS NOT NULL
+                AND s.lon IS NOT NULL
+            WHERE t1.monitoringSiteIdentifier = '{site_identifier}'
+            ORDER BY t1.phenomenonTimeSamplingDate DESC
+            '''
+        else:
+            query = f'''
+            SELECT t1.* FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_T_WISE6_DisaggregatedData" t1
+            INNER JOIN (
+                SELECT observedPropertyDeterminandCode,
+                       MAX(phenomenonTimeSamplingDate_year) as max_year
+                FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_T_WISE6_DisaggregatedData"
+                WHERE monitoringSiteIdentifier = '{site_identifier}'
+                GROUP BY observedPropertyDeterminandCode
+            ) t2 ON t1.observedPropertyDeterminandCode = t2.observedPropertyDeterminandCode
+               AND t1.phenomenonTimeSamplingDate_year = t2.max_year
+            WHERE t1.monitoringSiteIdentifier = '{site_identifier}'
+            ORDER BY t1.phenomenonTimeSamplingDate DESC
+            '''
+
         print(f"DEBUG: Dremio latest by site query: {query}")
         return self.execute_query(query)
-    
+
+
     def close(self) -> None:
         """Close the session."""
         self.session.close()
