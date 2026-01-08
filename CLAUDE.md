@@ -47,10 +47,10 @@ pip install -e .
 - `src/dremio_service.py`: Main Dremio API service class (`DremioApiService`) for direct Dremio data lake access
 - `src/unified_data_service.py`: Unified service that provides optimized Dremio data lake access
 - `src/api_server.py`: FastAPI web service providing REST API endpoints
-- `src/coordinate_service.py`: Service for enriching data with GPS coordinates
+- `src/geojson_formatter.py`: OGC-compliant GeoJSON formatting utilities
 - `app.py`: Entry point to start the web service
 - `example_usage.py`: Advanced usage examples with custom queries and data analysis
-- `requirements.txt`: Project dependencies (requests, pandas, python-dotenv, fastapi, uvicorn, sqlite3)
+- `requirements.txt`: Project dependencies (requests, pandas, python-dotenv, fastapi, uvicorn, geojson)
 
 ### API Service Features
 
@@ -64,14 +64,19 @@ pip install -e .
 - **Time-series data retrieval** with aggregation capabilities (raw, monthly, yearly)
 - **Metadata discovery** for parameters and monitoring sites
 - **Temporal filtering** with date range queries
+- **OGC-compliant GeoJSON output** for spatial data and measurements
+- **Bounding box filtering** for spatial queries
 
 ### Web API Endpoints
 
 #### Core Data Endpoints
 - `GET /healthCheck`: Service status and health check
 - `GET /waterbase`: Get waterbase disaggregated data with optional country filtering
+  - Parameters: `country_code`, `limit`, `format` (json/geojson)
 - `GET /waterbase/country/{country_code}`: Latest measurements per parameter by country
+  - Parameters: `format` (json/geojson)
 - `GET /waterbase/site/{site_identifier}`: Latest measurements per parameter by monitoring site
+  - Parameters: `format` (json/geojson)
 
 #### Time-Series Endpoints
 - `GET /timeseries/site/{site_identifier}`: Get time-series data for a monitoring site with aggregation options
@@ -79,8 +84,13 @@ pip install -e .
 
 #### Metadata Endpoints
 - `GET /parameters`: List all available chemical parameters with measurement counts
-- `GET /sites`: List all monitoring sites with coordinates (optional country filter)
-- `GET /coordinates/country/{country_code}`: GPS coordinates for sites in a country
+
+#### OGC-Compliant Spatial Endpoints
+- `GET /ogc/spatial-locations`: Get monitoring site locations as OGC-compliant GeoJSON FeatureCollection
+  - Parameters: `country_code`, `limit`, `bbox` (minLon,minLat,maxLon,maxLat)
+  - Returns: GeoJSON FeatureCollection with Point geometries
+  - Supports bounding box filtering for spatial queries
+  - This replaces the legacy `/sites` and `/coordinates/country/{country_code}` endpoints
 
 ### Data Sources
 
