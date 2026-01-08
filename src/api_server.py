@@ -1,9 +1,10 @@
-from fastapi import FastAPI, HTTPException, Query
-from typing import Optional, Dict, Any
+from fastapi import FastAPI, HTTPException, Query, Request
+from typing import Optional, Dict, Any, List
 import uvicorn
 import pandas as pd
 from .dremio_service import DremioApiService
 from .geojson_formatter import GeoJSONFormatter
+from .ogc_features import OGCConformance, OGCCollections, OGCLinks
 import logging
 from datetime import datetime
 
@@ -13,8 +14,8 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="EEA WISE Data API",
-    description="API service to retrieve water quality disaggregated data from the European Environment Agency (EEA) WISE_SOE database using Dremio data lake. Supports OGC-compliant GeoJSON output.",
-    version="3.2.0"
+    description="API service to retrieve water quality disaggregated data from the European Environment Agency (EEA) WISE_SOE database using Dremio data lake. Supports OGC API - Features compliance with GeoJSON output.",
+    version="4.0.0"
 )
 
 # Initialize Dremio Data service
@@ -25,6 +26,10 @@ try:
 except Exception as e:
     logger.error(f"✗ Failed to initialize data service: {e}")
     data_service = None
+
+# Initialize OGC collections
+ogc_collections = OGCCollections()
+logger.info(f"✓ Initialized {len(ogc_collections.list_collection_ids())} OGC collections")
 
 def flatten_dremio_data(dremio_result: Dict[str, Any]) -> list:
     """
@@ -126,11 +131,18 @@ async def service_status():
             "active_data_service": service_info.get('active_service', 'none'),
             "configured_mode": service_info.get('configured_mode', 'unknown')
         },
-        "api_version": "3.2.0",
+        "api_version": "4.0.0",
+        "ogc_compliance": {
+            "ogc_api_features": True,
+            "conformance_classes": len(OGCConformance.get_conformance_declaration()["conformsTo"]),
+            "collections": ogc_collections.list_collection_ids()
+        },
         "features": {
             "data_connection": data_service is not None,
             "ogc_geojson_support": True,
+            "ogc_collections": True,
             "bbox_filtering": True,
+            "pagination": True,
             "coordinate_enrichment": "SQL JOIN (optimized)",
             "switchable_backends": True,
             "service_info": service_info
@@ -503,6 +515,396 @@ async def get_ogc_spatial_locations(
             status_code=500,
             detail=f"Failed to fetch spatial locations: {str(e)}"
         )
+
+
+# ============================================================================
+# OGC API - Features Endpoints (Phase 2)
+# ============================================================================
+
+@app.get("/conformance")
+async def get_conformance() -> Dict[str, List[str]]:
+    """
+    OGC API - Features conformance declaration.
+
+    Declares which OGC conformance classes this API implements.
+    This is a core requirement of OGC API - Features Part 1.
+
+    Returns:
+        Dictionary with conformsTo array listing implemented conformance classes
+
+    Example:
+        GET /conformance
+    """
+    return OGCConformance.get_conformance_declaration()
+
+
+@app.get("/collections")
+async def get_collections(request: Request) -> Dict[str, Any]:
+    """
+    Get list of available OGC API - Features collections.
+
+    Returns metadata about all available collections (datasets) that can be
+    queried via the /collections/{collectionId}/items endpoint.
+
+    Returns:
+        Dictionary with collections array and links
+
+    Example:
+        GET /collections
+    """
+    # Build base URL from request
+    base_url = str(request.base_url).rstrip('/')
+
+    return ogc_collections.get_all_collections(base_url)
+
+
+@app.get("/collections/{collection_id}")
+async def get_collection(collection_id: str, request: Request) -> Dict[str, Any]:
+    """
+    Get metadata for a specific collection.
+
+    Args:
+        collection_id: Collection identifier (e.g., 'monitoring-sites', 'latest-measurements')
+
+    Returns:
+        Collection metadata dictionary
+
+    Raises:
+        HTTPException: If collection not found
+
+    Example:
+        GET /collections/monitoring-sites
+    """
+    collection = ogc_collections.get_collection(collection_id)
+
+    if not collection:
+        available = ogc_collections.list_collection_ids()
+        raise HTTPException(
+            status_code=404,
+            detail=f"Collection '{collection_id}' not found. Available collections: {', '.join(available)}"
+        )
+
+    base_url = str(request.base_url).rstrip('/')
+    return collection.to_dict(base_url)
+
+
+@app.get("/collections/{collection_id}/items")
+async def get_collection_items(
+    collection_id: str,
+    request: Request,
+    limit: int = Query(1000, ge=1, le=10000, description="Maximum number of items to return"),
+    offset: int = Query(0, ge=0, description="Number of items to skip"),
+    bbox: Optional[str] = Query(None, description="Bounding box filter: minLon,minLat,maxLon,maxLat"),
+    country_code: Optional[str] = Query(None, description="Filter by ISO country code"),
+    datetime_param: Optional[str] = Query(None, alias="datetime", description="Temporal filter (ISO 8601 interval)")
+) -> Dict[str, Any]:
+    """
+    Get items (features) from a collection.
+
+    This is the main OGC API - Features endpoint for querying data.
+    Supports spatial filtering (bbox), country filtering, and temporal filtering.
+
+    Args:
+        collection_id: Collection identifier
+        limit: Maximum number of items to return (1-10000)
+        offset: Number of items to skip (for pagination)
+        bbox: Bounding box as 'minLon,minLat,maxLon,maxLat'
+        country_code: ISO country code filter (e.g., 'FR', 'DE')
+        datetime_param: Temporal filter in ISO 8601 format
+
+    Returns:
+        GeoJSON FeatureCollection with items
+
+    Example:
+        GET /collections/monitoring-sites/items?country_code=FR&limit=100
+        GET /collections/latest-measurements/items?bbox=2.2,48.8,2.5,48.9
+    """
+    if not data_service:
+        raise HTTPException(status_code=503, detail="Data service unavailable")
+
+    # Validate collection exists
+    collection = ogc_collections.get_collection(collection_id)
+    if not collection:
+        available = ogc_collections.list_collection_ids()
+        raise HTTPException(
+            status_code=404,
+            detail=f"Collection '{collection_id}' not found. Available collections: {', '.join(available)}"
+        )
+
+    try:
+        # Route to appropriate handler based on collection_id
+        if collection_id == "monitoring-sites":
+            return await _get_monitoring_sites_items(
+                request, limit, offset, bbox, country_code
+            )
+        elif collection_id == "latest-measurements":
+            return await _get_latest_measurements_items(
+                request, limit, offset, bbox, country_code
+            )
+        elif collection_id == "disaggregated-data":
+            return await _get_disaggregated_data_items(
+                request, limit, offset, bbox, country_code
+            )
+        elif collection_id == "time-series":
+            raise HTTPException(
+                status_code=501,
+                detail="Time-series collection requires a specific site identifier. Use /timeseries/site/{site_id} endpoint instead."
+            )
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Collection handler not implemented for '{collection_id}'"
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch collection items: {str(e)}"
+        )
+
+
+async def _get_monitoring_sites_items(
+    request: Request,
+    limit: int,
+    offset: int,
+    bbox: Optional[str],
+    country_code: Optional[str]
+) -> Dict[str, Any]:
+    """Helper function to get monitoring sites collection items."""
+
+    query = f"""
+    SELECT
+        thematicIdIdentifier,
+        thematicIdIdentifierScheme,
+        monitoringSiteIdentifier,
+        monitoringSiteName,
+        countryCode,
+        lat,
+        lon
+    FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_S_WISE_SpatialObject_DerivedData"
+    WHERE 1=1
+    """
+
+    # Add filters
+    if country_code:
+        query += f" AND countryCode = '{country_code}'"
+
+    if bbox:
+        try:
+            coords = [float(x) for x in bbox.split(',')]
+            if len(coords) != 4:
+                raise ValueError()
+            min_lon, min_lat, max_lon, max_lat = coords
+            query += f" AND lon BETWEEN {min_lon} AND {max_lon}"
+            query += f" AND lat BETWEEN {min_lat} AND {max_lat}"
+        except (ValueError, IndexError):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid bbox format. Expected: minLon,minLat,maxLon,maxLat"
+            )
+
+    # Get total count for pagination
+    count_query = f"SELECT COUNT(*) as total FROM ({query}) AS subquery"
+    count_result = data_service.execute_query(count_query)
+    count_data = flatten_dremio_data(count_result)
+    total_count = count_data[0]['total'] if count_data else 0
+
+    # Add pagination
+    query += f" LIMIT {limit} OFFSET {offset}"
+
+    result = data_service.execute_query(query)
+    flattened_data = flatten_dremio_data(result)
+
+    # Convert to GeoJSON
+    geojson_response = GeoJSONFormatter.format_spatial_locations(flattened_data, country_code)
+
+    # Build base URL and add pagination links
+    base_url = str(request.base_url).rstrip('')
+    collection_url = f"{base_url}/collections/monitoring-sites/items"
+
+    extra_params = {}
+    if country_code:
+        extra_params['country_code'] = country_code
+    if bbox:
+        extra_params['bbox'] = bbox
+
+    geojson_response["links"] = OGCLinks.create_pagination_links(
+        collection_url, offset, limit, total_count, extra_params
+    )
+
+    # Add OGC metadata
+    geojson_response["numberMatched"] = total_count
+    geojson_response["timeStamp"] = datetime.utcnow().isoformat() + "Z"
+
+    return geojson_response
+
+
+async def _get_latest_measurements_items(
+    request: Request,
+    limit: int,
+    offset: int,
+    bbox: Optional[str],
+    country_code: Optional[str]
+) -> Dict[str, Any]:
+    """Helper function to get latest measurements collection items."""
+
+    # Base query with coordinate enrichment
+    query = f"""
+    WITH ranked_data AS (
+        SELECT
+            w.*,
+            s.lat as coordinate_latitude,
+            s.lon as coordinate_longitude,
+            s.monitoringSiteName as coordinate_siteName,
+            ROW_NUMBER() OVER (
+                PARTITION BY w.monitoringSiteIdentifier, w.observedPropertyDeterminandCode
+                ORDER BY w.phenomenonTimeSamplingDate DESC
+            ) as rn
+        FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_T_WISE6_DisaggregatedData" w
+        LEFT JOIN "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_S_WISE_SpatialObject_DerivedData" s
+            ON w.monitoringSiteIdentifier = s.thematicIdIdentifier
+    )
+    SELECT *
+    FROM ranked_data
+    WHERE rn = 1
+    """
+
+    # Add filters
+    conditions = []
+    if country_code:
+        conditions.append(f"countryCode = '{country_code}'")
+
+    if bbox:
+        try:
+            coords = [float(x) for x in bbox.split(',')]
+            if len(coords) != 4:
+                raise ValueError()
+            min_lon, min_lat, max_lon, max_lat = coords
+            conditions.append(f"coordinate_longitude BETWEEN {min_lon} AND {max_lon}")
+            conditions.append(f"coordinate_latitude BETWEEN {min_lat} AND {max_lat}")
+        except (ValueError, IndexError):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid bbox format. Expected: minLon,minLat,maxLon,maxLat"
+            )
+
+    if conditions:
+        query += " AND " + " AND ".join(conditions)
+
+    # Get total count for pagination
+    count_query = f"SELECT COUNT(*) as total FROM ({query}) AS subquery"
+    count_result = data_service.execute_query(count_query)
+    count_data = flatten_dremio_data(count_result)
+    total_count = count_data[0]['total'] if count_data else 0
+
+    # Add pagination
+    query += f" LIMIT {limit} OFFSET {offset}"
+
+    result = data_service.execute_query(query)
+    flattened_data = flatten_dremio_data(result)
+    enriched_data = format_optimized_coordinates(flattened_data)
+
+    # Convert to GeoJSON
+    geojson_response = GeoJSONFormatter.format_measurements_with_location(enriched_data)
+
+    # Build base URL and add pagination links
+    base_url = str(request.base_url).rstrip('/')
+    collection_url = f"{base_url}/collections/latest-measurements/items"
+
+    extra_params = {}
+    if country_code:
+        extra_params['country_code'] = country_code
+    if bbox:
+        extra_params['bbox'] = bbox
+
+    geojson_response["links"] = OGCLinks.create_pagination_links(
+        collection_url, offset, limit, total_count, extra_params
+    )
+
+    # Add OGC metadata
+    geojson_response["numberMatched"] = total_count
+    geojson_response["timeStamp"] = datetime.utcnow().isoformat() + "Z"
+
+    return geojson_response
+
+
+async def _get_disaggregated_data_items(
+    request: Request,
+    limit: int,
+    offset: int,
+    bbox: Optional[str],
+    country_code: Optional[str]
+) -> Dict[str, Any]:
+    """Helper function to get disaggregated data collection items."""
+
+    # Base query with coordinate enrichment
+    query = f"""
+    SELECT
+        w.*,
+        s.lat as coordinate_latitude,
+        s.lon as coordinate_longitude,
+        s.monitoringSiteName as coordinate_siteName
+    FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_T_WISE6_DisaggregatedData" w
+    LEFT JOIN "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_S_WISE_SpatialObject_DerivedData" s
+        ON w.monitoringSiteIdentifier = s.thematicIdIdentifier
+    WHERE 1=1
+    """
+
+    # Add filters
+    if country_code:
+        query += f" AND w.countryCode = '{country_code}'"
+
+    if bbox:
+        try:
+            coords = [float(x) for x in bbox.split(',')]
+            if len(coords) != 4:
+                raise ValueError()
+            min_lon, min_lat, max_lon, max_lat = coords
+            query += f" AND s.lon BETWEEN {min_lon} AND {max_lon}"
+            query += f" AND s.lat BETWEEN {min_lat} AND {max_lat}"
+        except (ValueError, IndexError):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid bbox format. Expected: minLon,minLat,maxLon,maxLat"
+            )
+
+    # Get total count for pagination
+    count_query = f"SELECT COUNT(*) as total FROM ({query}) AS subquery"
+    count_result = data_service.execute_query(count_query)
+    count_data = flatten_dremio_data(count_result)
+    total_count = count_data[0]['total'] if count_data else 0
+
+    # Add pagination
+    query += f" LIMIT {limit} OFFSET {offset}"
+
+    result = data_service.execute_query(query)
+    flattened_data = flatten_dremio_data(result)
+    enriched_data = format_optimized_coordinates(flattened_data)
+
+    # Convert to GeoJSON
+    geojson_response = GeoJSONFormatter.format_measurements_with_location(enriched_data)
+
+    # Build base URL and add pagination links
+    base_url = str(request.base_url).rstrip('/')
+    collection_url = f"{base_url}/collections/disaggregated-data/items"
+
+    extra_params = {}
+    if country_code:
+        extra_params['country_code'] = country_code
+    if bbox:
+        extra_params['bbox'] = bbox
+
+    geojson_response["links"] = OGCLinks.create_pagination_links(
+        collection_url, offset, limit, total_count, extra_params
+    )
+
+    # Add OGC metadata
+    geojson_response["numberMatched"] = total_count
+    geojson_response["timeStamp"] = datetime.utcnow().isoformat() + "Z"
+
+    return geojson_response
 
 
 def start_server(host: str = "127.0.0.1", port: int = 8000):
