@@ -202,13 +202,16 @@ while url:
 
 **Phase 2 ✅ Complete!**
 
-**Phase 3 (Future Enhancements):**
+**Future Enhancements (Optional):**
 - CQL2 filtering (complex queries)
 - Temporal filtering implementation
 - Property selection
 - Sorting capabilities
 - Multiple CRS support
 - Content negotiation (HTML output)
+
+**Note on Phase 3 (OGC SensorThings API):**
+The originally planned Phase 3 (OGC SensorThings API) is **not applicable** for this project. SensorThings is designed for real-time IoT sensor networks with streaming data, while EEA WISE contains static/batch-updated disaggregated data from Dremio. The current implementation with OGC API - Features (spatial queries) and custom time-series endpoints provides the appropriate architecture for this use case.
 
 ---
 

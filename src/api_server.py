@@ -1,7 +1,6 @@
 from fastapi import FastAPI, HTTPException, Query, Request
 from typing import Optional, Dict, Any, List
 import uvicorn
-import pandas as pd
 from .dremio_service import DremioApiService
 from .geojson_formatter import GeoJSONFormatter
 from .ogc_features import OGCConformance, OGCCollections, OGCLinks
