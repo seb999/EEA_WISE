@@ -15,7 +15,33 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="EEA WISE Data API",
     description="API service to retrieve water quality disaggregated data from the European Environment Agency (EEA) WISE_SOE database using Dremio data lake. Supports OGC API - Features compliance with GeoJSON output.",
-    version="4.0.0"
+    version="4.0.0",
+    openapi_tags=[
+        {
+            "name": "System",
+            "description": "Health check and system information endpoints"
+        },
+        {
+            "name": "OGC API - Features Core",
+            "description": "OGC API - Features Part 1 Core endpoints for standards-compliant geospatial data access"
+        },
+        {
+            "name": "OGC Collections",
+            "description": "Query items from OGC collections (monitoring sites, measurements, disaggregated data)"
+        },
+        {
+            "name": "Time-Series",
+            "description": "Specialized endpoints for temporal water quality data with aggregation capabilities"
+        },
+        {
+            "name": "Metadata",
+            "description": "Discovery endpoints for available parameters and monitoring sites"
+        },
+        {
+            "name": "Legacy OGC",
+            "description": "Phase 1 OGC endpoints (maintained for backward compatibility)"
+        }
+    ]
 )
 
 # Initialize Dremio Data service
@@ -119,7 +145,7 @@ def format_optimized_coordinates(data: list) -> list:
 
     return formatted_data
 
-@app.get("/healthCheck")
+@app.get("/healthCheck", tags=["System"])
 async def service_status():
     """Get status of data service and API features."""
 
@@ -149,165 +175,7 @@ async def service_status():
         },
     }
 
-@app.get("/waterbase")
-async def get_waterbase_data(
-    country_code: Optional[str] = Query(None, description="Filter by country code (e.g., 'DE', 'DK', 'FI')"),
-    limit: int = Query(1000, ge=1, le=300000, description="Maximum number of records to return"),
-    format: str = Query("json", description="Output format: 'json' or 'geojson'")
-) -> Dict[str, Any]:
-    """
-    Get waterbase disaggregated data.
-
-    Args:
-        country_code: Optional country code filter (e.g., 'DE' for Germany)
-        limit: Maximum number of records to return (1-300000)
-        format: Output format - 'json' (default) or 'geojson' (OGC-compliant)
-
-    Returns:
-        JSON or GeoJSON response with waterbase disaggregated data
-    """
-    try:
-        if not data_service:
-            raise HTTPException(
-                status_code=503,
-                detail="Data service not available"
-            )
-
-        # Get disaggregated data from Dremio with optimized coordinate inclusion
-        result = data_service.get_waterbase_data(country_code, limit, include_coordinates=True)
-        flattened_data = flatten_dremio_data(result)
-        enriched_data = format_optimized_coordinates(flattened_data)
-
-        # Return GeoJSON format if requested
-        if format.lower() == "geojson":
-            return GeoJSONFormatter.format_measurements_with_location(enriched_data)
-
-        # Default JSON format
-        return {
-            "success": True,
-            "data": enriched_data,
-            "filters": {
-                "country_code": country_code,
-                "limit": limit
-            },
-            "metadata": {
-                "total_records": len(enriched_data),
-                "data_type": "disaggregated",
-                "coordinates_included": True,
-                "columns": result.get("columns", [])
-            }
-        }
-
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to fetch waterbase data: {str(e)}"
-        )
-
-
-@app.get("/waterbase/country/{country_code}")
-async def get_latest_measurements_by_country(
-    country_code: str,
-    format: str = Query("json", description="Output format: 'json' or 'geojson'")
-) -> Dict[str, Any]:
-    """
-    Get the latest measurement for each chemical parameter by country.
-
-    Args:
-        country_code: Country code (e.g., 'FR', 'DE')
-        format: Output format - 'json' (default) or 'geojson' (OGC-compliant)
-
-    Returns:
-        JSON or GeoJSON response with latest measurements per parameter for the country
-    """
-    try:
-        if not data_service:
-            raise HTTPException(
-                status_code=503,
-                detail="Data service not available"
-            )
-
-        # Get latest measurements by country from Dremio with optimized coordinate inclusion
-        result = data_service.get_latest_measurements_by_country(country_code, include_coordinates=True)
-        flattened_data = flatten_dremio_data(result)
-        enriched_data = format_optimized_coordinates(flattened_data)
-
-        # Return GeoJSON format if requested
-        if format.lower() == "geojson":
-            return GeoJSONFormatter.format_measurements_with_location(enriched_data)
-
-        # Default JSON format
-        return {
-            "success": True,
-            "query_type": "latest_by_country",
-            "country_code": country_code,
-            "source": data_service.get_service_info().get('active_service', 'unknown') if data_service else 'unknown',
-            "data": enriched_data,
-            "metadata": {
-                "total_records": len(enriched_data),
-                "coordinates_included": True,
-                "description": f"Latest measurement for each chemical parameter in {country_code}"
-            }
-        }
-        
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to fetch latest measurements for country {country_code}: {str(e)}"
-        )
-
-@app.get("/waterbase/site/{site_identifier}")
-async def get_latest_measurements_by_site(
-    site_identifier: str,
-    format: str = Query("json", description="Output format: 'json' or 'geojson'")
-) -> Dict[str, Any]:
-    """
-    Get the latest measurement for each chemical parameter by monitoring site.
-
-    Args:
-        site_identifier: Monitoring site identifier (e.g., 'FRFR05026000')
-        format: Output format - 'json' (default) or 'geojson' (OGC-compliant)
-
-    Returns:
-        JSON or GeoJSON response with latest measurements per parameter for the site
-    """
-    try:
-        if not data_service:
-            raise HTTPException(
-                status_code=503,
-                detail="Data service not available"
-            )
-
-        # Get latest measurements by site from Dremio with optimized coordinate inclusion
-        result = data_service.get_latest_measurements_by_site(site_identifier, include_coordinates=True)
-        flattened_data = flatten_dremio_data(result)
-        enriched_data = format_optimized_coordinates(flattened_data)
-
-        # Return GeoJSON format if requested
-        if format.lower() == "geojson":
-            return GeoJSONFormatter.format_measurements_with_location(enriched_data)
-
-        # Default JSON format
-        return {
-            "success": True,
-            "query_type": "latest_by_site",
-            "site_identifier": site_identifier,
-            "source": data_service.get_service_info().get('active_service', 'unknown') if data_service else 'unknown',
-            "data": enriched_data,
-            "metadata": {
-                "total_records": len(enriched_data),
-                "coordinates_included": True,
-                "description": f"Latest measurement for each chemical parameter at site {site_identifier}"
-            }
-        }
-        
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to fetch latest measurements for site {site_identifier}: {str(e)}"
-        )
-
-@app.get("/timeseries/site/{site_identifier}")
+@app.get("/timeseries/site/{site_identifier}", tags=["Time-Series"])
 async def get_timeseries_by_site(
     site_identifier: str,
     parameter: Optional[str] = Query(None, description="Chemical parameter code (e.g., 'NO3')"),
@@ -390,7 +258,7 @@ async def get_timeseries_by_site(
             detail=f"Failed to fetch time-series data for site {site_identifier}: {str(e)}"
         )
 
-@app.get("/parameters")
+@app.get("/parameters", tags=["Metadata"])
 async def get_available_parameters() -> Dict[str, Any]:
     """
     Get list of available chemical parameters with metadata.
@@ -423,7 +291,7 @@ async def get_available_parameters() -> Dict[str, Any]:
             detail=f"Failed to fetch available parameters: {str(e)}"
         )
 
-@app.get("/ogc/spatial-locations")
+@app.get("/ogc/spatial-locations", tags=["Legacy OGC"])
 async def get_ogc_spatial_locations(
     country_code: Optional[str] = Query(None, description="Filter by country code (e.g., 'DE', 'FR')"),
     limit: int = Query(1000, ge=1, le=10000, description="Maximum number of features to return"),
@@ -521,7 +389,7 @@ async def get_ogc_spatial_locations(
 # OGC API - Features Endpoints (Phase 2)
 # ============================================================================
 
-@app.get("/conformance")
+@app.get("/conformance", tags=["OGC API - Features Core"])
 async def get_conformance() -> Dict[str, List[str]]:
     """
     OGC API - Features conformance declaration.
@@ -538,7 +406,7 @@ async def get_conformance() -> Dict[str, List[str]]:
     return OGCConformance.get_conformance_declaration()
 
 
-@app.get("/collections")
+@app.get("/collections", tags=["OGC API - Features Core"])
 async def get_collections(request: Request) -> Dict[str, Any]:
     """
     Get list of available OGC API - Features collections.
@@ -558,7 +426,7 @@ async def get_collections(request: Request) -> Dict[str, Any]:
     return ogc_collections.get_all_collections(base_url)
 
 
-@app.get("/collections/{collection_id}")
+@app.get("/collections/{collection_id}", tags=["OGC API - Features Core"])
 async def get_collection(collection_id: str, request: Request) -> Dict[str, Any]:
     """
     Get metadata for a specific collection.
@@ -588,7 +456,7 @@ async def get_collection(collection_id: str, request: Request) -> Dict[str, Any]
     return collection.to_dict(base_url)
 
 
-@app.get("/collections/{collection_id}/items")
+@app.get("/collections/{collection_id}/items", tags=["OGC Collections"])
 async def get_collection_items(
     collection_id: str,
     request: Request,
@@ -604,8 +472,16 @@ async def get_collection_items(
     This is the main OGC API - Features endpoint for querying data.
     Supports spatial filtering (bbox), country filtering, and temporal filtering.
 
+    **Available Collections:**
+    - `monitoring-sites` - Monitoring site locations
+    - `latest-measurements` - Latest measurements per parameter
+    - `disaggregated-data` - Complete water quality data
+
+    **Note:** Time-series data is available via the dedicated `/timeseries/site/{site_identifier}` endpoint
+    with specialized aggregation features (raw/monthly/yearly).
+
     Args:
-        collection_id: Collection identifier
+        collection_id: Collection identifier (monitoring-sites, latest-measurements, disaggregated-data)
         limit: Maximum number of items to return (1-10000)
         offset: Number of items to skip (for pagination)
         bbox: Bounding box as 'minLon,minLat,maxLon,maxLat'
@@ -615,9 +491,10 @@ async def get_collection_items(
     Returns:
         GeoJSON FeatureCollection with items
 
-    Example:
+    Examples:
         GET /collections/monitoring-sites/items?country_code=FR&limit=100
         GET /collections/latest-measurements/items?bbox=2.2,48.8,2.5,48.9
+        GET /collections/disaggregated-data/items?country_code=FR&limit=1000&offset=0
     """
     if not data_service:
         raise HTTPException(status_code=503, detail="Data service unavailable")
@@ -644,11 +521,6 @@ async def get_collection_items(
         elif collection_id == "disaggregated-data":
             return await _get_disaggregated_data_items(
                 request, limit, offset, bbox, country_code
-            )
-        elif collection_id == "time-series":
-            raise HTTPException(
-                status_code=501,
-                detail="Time-series collection requires a specific site identifier. Use /timeseries/site/{site_id} endpoint instead."
             )
         else:
             raise HTTPException(

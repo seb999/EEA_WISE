@@ -194,19 +194,6 @@ class OGCCollections:
             extent_temporal=["1990-01-01T00:00:00Z", datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")]
         )
 
-        # Collection 4: Time Series
-        self.collections["time-series"] = OGCCollection(
-            id="time-series",
-            title="Water Quality Time Series",
-            description=(
-                "Time-series data for water quality parameters at monitoring sites. "
-                "Supports raw, monthly, and yearly aggregations. "
-                "Useful for trend analysis and temporal pattern identification."
-            ),
-            extent_spatial=[-31.5, 27.6, 69.1, 81.0],
-            extent_temporal=["1990-01-01T00:00:00Z", datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")]
-        )
-
     def get_collection(self, collection_id: str) -> Optional[OGCCollection]:
         """
         Get a specific collection by ID.

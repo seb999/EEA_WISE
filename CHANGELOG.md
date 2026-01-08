@@ -6,6 +6,7 @@
 
 - **Complete OGC API - Features Part 1 implementation** 🎉
   - Fully compliant with OGC API - Features specification
+  - 3 OGC collections for spatial water quality data
   - 4 conformance classes implemented
 
 - **New OGC Core Endpoints:**
@@ -14,11 +15,10 @@
   - `GET /collections/{collectionId}` - Get collection metadata
   - `GET /collections/{collectionId}/items` - Query collection items
 
-- **4 OGC Collections:**
+- **3 OGC Collections:**
   1. `monitoring-sites` - Water quality monitoring site locations
   2. `latest-measurements` - Latest measurements per parameter per site
   3. `disaggregated-data` - Complete disaggregated water quality data
-  4. `time-series` - Time-series data (redirects to existing endpoint)
 
 - **Pagination Support:**
   - `limit` and `offset` parameters
@@ -68,6 +68,16 @@
   - Added `Request` parameter support for dynamic URL generation
   - Improved type hints with `List` types
   - Better error messages with available collection lists
+
+### Removed
+
+- **Redundant `/waterbase` endpoints** (superseded by OGC collections)
+  - `GET /waterbase` - Use `/collections/disaggregated-data/items` instead
+  - `GET /waterbase/country/{country_code}` - Use `/collections/latest-measurements/items?country_code={code}` instead
+  - `GET /waterbase/site/{site_identifier}` - Use `/collections/latest-measurements/items` with appropriate filters instead
+  - Reason: OGC collections provide same functionality with better standards compliance
+
+**Note:** Time-series data remains available via dedicated endpoint `/timeseries/site/{site_identifier}` with specialized aggregation features (raw/monthly/yearly). This endpoint uses custom JSON format optimized for temporal analysis rather than GeoJSON.
 
 ### Technical Details
 
