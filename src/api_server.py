@@ -101,6 +101,34 @@ def flatten_dremio_data(dremio_result: Dict[str, Any]) -> list:
     return flattened_data
 
 
+def validate_bbox(bbox: str) -> tuple:
+    """
+    Validate and parse bounding box parameter.
+
+    Args:
+        bbox: Bounding box string in format "minLon,minLat,maxLon,maxLat"
+
+    Returns:
+        Tuple of (min_lon, min_lat, max_lon, max_lat) as floats
+
+    Raises:
+        HTTPException: If bbox format is invalid
+    """
+    try:
+        coords = [float(x) for x in bbox.split(',')]
+        if len(coords) != 4:
+            raise ValueError("Expected 4 coordinates")
+        min_lon, min_lat, max_lon, max_lat = coords
+        if min_lon >= max_lon or min_lat >= max_lat:
+            raise ValueError("Invalid bbox bounds: min values must be less than max values")
+        return min_lon, min_lat, max_lon, max_lat
+    except (ValueError, IndexError) as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid bbox format. Expected: minLon,minLat,maxLon,maxLat. Error: {str(e)}"
+        )
+
+
 def format_optimized_coordinates(data: list) -> list:
     """
     Format data that already includes coordinates from JOIN query.
@@ -782,15 +810,9 @@ async def get_ogc_spatial_locations(
 
         # Add bounding box filter if provided
         if bbox:
-            try:
-                min_lon, min_lat, max_lon, max_lat = map(float, bbox.split(','))
-                base_query += f" AND lon >= {min_lon} AND lon <= {max_lon}"
-                base_query += f" AND lat >= {min_lat} AND lat <= {max_lat}"
-            except (ValueError, IndexError):
-                raise HTTPException(
-                    status_code=400,
-                    detail="Invalid bbox format. Use: minLon,minLat,maxLon,maxLat"
-                )
+            min_lon, min_lat, max_lon, max_lat = validate_bbox(bbox)
+            base_query += f" AND lon >= {min_lon} AND lon <= {max_lon}"
+            base_query += f" AND lat >= {min_lat} AND lat <= {max_lat}"
 
         base_query += f" LIMIT {limit}"
 
@@ -1008,18 +1030,9 @@ async def _get_monitoring_sites_items(
         query += f" AND countryCode = '{country_code}'"
 
     if bbox:
-        try:
-            coords = [float(x) for x in bbox.split(',')]
-            if len(coords) != 4:
-                raise ValueError()
-            min_lon, min_lat, max_lon, max_lat = coords
-            query += f" AND lon BETWEEN {min_lon} AND {max_lon}"
-            query += f" AND lat BETWEEN {min_lat} AND {max_lat}"
-        except (ValueError, IndexError):
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid bbox format. Expected: minLon,minLat,maxLon,maxLat"
-            )
+        min_lon, min_lat, max_lon, max_lat = validate_bbox(bbox)
+        query += f" AND lon BETWEEN {min_lon} AND {max_lon}"
+        query += f" AND lat BETWEEN {min_lat} AND {max_lat}"
 
     # Get total count for pagination
     count_query = f"SELECT COUNT(*) as total FROM ({query}) AS subquery"
@@ -1049,6 +1062,14 @@ async def _get_monitoring_sites_items(
     geojson_response["links"] = OGCLinks.create_pagination_links(
         collection_url, offset, limit, total_count, extra_params
     )
+
+    # Add collection link (required by OGC)
+    geojson_response["links"].append({
+        "href": f"{base_url}/collections/monitoring-sites",
+        "rel": "collection",
+        "type": "application/json",
+        "title": "The monitoring-sites collection"
+    })
 
     # Add OGC metadata
     geojson_response["numberMatched"] = total_count
@@ -1093,18 +1114,9 @@ async def _get_latest_measurements_items(
         conditions.append(f"countryCode = '{country_code}'")
 
     if bbox:
-        try:
-            coords = [float(x) for x in bbox.split(',')]
-            if len(coords) != 4:
-                raise ValueError()
-            min_lon, min_lat, max_lon, max_lat = coords
-            conditions.append(f"coordinate_longitude BETWEEN {min_lon} AND {max_lon}")
-            conditions.append(f"coordinate_latitude BETWEEN {min_lat} AND {max_lat}")
-        except (ValueError, IndexError):
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid bbox format. Expected: minLon,minLat,maxLon,maxLat"
-            )
+        min_lon, min_lat, max_lon, max_lat = validate_bbox(bbox)
+        conditions.append(f"coordinate_longitude BETWEEN {min_lon} AND {max_lon}")
+        conditions.append(f"coordinate_latitude BETWEEN {min_lat} AND {max_lat}")
 
     if conditions:
         query += " AND " + " AND ".join(conditions)
@@ -1138,6 +1150,14 @@ async def _get_latest_measurements_items(
     geojson_response["links"] = OGCLinks.create_pagination_links(
         collection_url, offset, limit, total_count, extra_params
     )
+
+    # Add collection link (required by OGC)
+    geojson_response["links"].append({
+        "href": f"{base_url}/collections/latest-measurements",
+        "rel": "collection",
+        "type": "application/json",
+        "title": "The latest-measurements collection"
+    })
 
     # Add OGC metadata
     geojson_response["numberMatched"] = total_count
@@ -1173,18 +1193,9 @@ async def _get_disaggregated_data_items(
         query += f" AND w.countryCode = '{country_code}'"
 
     if bbox:
-        try:
-            coords = [float(x) for x in bbox.split(',')]
-            if len(coords) != 4:
-                raise ValueError()
-            min_lon, min_lat, max_lon, max_lat = coords
-            query += f" AND s.lon BETWEEN {min_lon} AND {max_lon}"
-            query += f" AND s.lat BETWEEN {min_lat} AND {max_lat}"
-        except (ValueError, IndexError):
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid bbox format. Expected: minLon,minLat,maxLon,maxLat"
-            )
+        min_lon, min_lat, max_lon, max_lat = validate_bbox(bbox)
+        query += f" AND s.lon BETWEEN {min_lon} AND {max_lon}"
+        query += f" AND s.lat BETWEEN {min_lat} AND {max_lat}"
 
     # Get total count for pagination
     count_query = f"SELECT COUNT(*) as total FROM ({query}) AS subquery"
@@ -1215,6 +1226,14 @@ async def _get_disaggregated_data_items(
     geojson_response["links"] = OGCLinks.create_pagination_links(
         collection_url, offset, limit, total_count, extra_params
     )
+
+    # Add collection link (required by OGC)
+    geojson_response["links"].append({
+        "href": f"{base_url}/collections/disaggregated-data",
+        "rel": "collection",
+        "type": "application/json",
+        "title": "The disaggregated-data collection"
+    })
 
     # Add OGC metadata
     geojson_response["numberMatched"] = total_count

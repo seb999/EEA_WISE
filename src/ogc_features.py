@@ -30,9 +30,6 @@ class OGCConformance:
     # OGC API - Features Part 2: CRS by reference
     CRS = "http://www.opengis.net/spec/ogcapi-features-2/1.0/conf/crs"
 
-    # Additional conformance classes
-    BBOX = "http://www.opengis.net/spec/ogcapi-features-1/1.0/req/core/bbox"
-
     @classmethod
     def get_conformance_declaration(cls) -> Dict[str, List[str]]:
         """
@@ -40,13 +37,15 @@ class OGCConformance:
 
         Returns:
             Dictionary with conformsTo array listing implemented conformance classes
+
+        Note: bbox filtering is part of the Core conformance class requirements,
+        not a separate conformance class.
         """
         return {
             "conformsTo": [
                 cls.CORE,
                 cls.GEOJSON,
-                cls.OAS30,
-                cls.BBOX
+                cls.OAS30
             ]
         }
 
@@ -229,10 +228,16 @@ class OGCCollections:
                     "title": "This document"
                 },
                 {
-                    "href": f"{base_url}/",
+                    "href": f"{base_url}/openapi.json",
                     "rel": "service-desc",
+                    "type": "application/vnd.oai.openapi+json;version=3.0",
+                    "title": "API definition in OpenAPI 3.0"
+                },
+                {
+                    "href": f"{base_url}/",
+                    "rel": "alternate",
                     "type": "application/json",
-                    "title": "API definition"
+                    "title": "Landing page"
                 }
             ]
         }
