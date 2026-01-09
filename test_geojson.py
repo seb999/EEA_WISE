@@ -87,15 +87,15 @@ def test_bbox_filter():
         return False
 
 
-def test_waterbase_geojson():
-    """Test waterbase data with GeoJSON format."""
+def test_disaggregated_data_collection():
+    """Test disaggregated data collection with GeoJSON format."""
     print("=" * 60)
-    print("Testing Waterbase Data with GeoJSON Format")
+    print("Testing Disaggregated Data Collection (OGC)")
     print("=" * 60)
 
-    # Test 3: Waterbase data in GeoJSON format
-    print("\n3. Testing waterbase data with GeoJSON format...")
-    url = "http://127.0.0.1:8000/waterbase?country_code=FR&limit=5&format=geojson"
+    # Test 3: Disaggregated data collection
+    print("\n3. Testing disaggregated data collection with GeoJSON format...")
+    url = "http://127.0.0.1:8000/collections/disaggregated-data/items?country_code=FR&limit=5"
 
     try:
         response = requests.get(url)
@@ -125,7 +125,7 @@ def test_waterbase_geojson():
             print(f"  - Parameter: {props.get('observedPropertyDeterminandCode')}")
             print(f"  - Value: {props.get('resultObservedValue')}")
 
-        print("\n✓ Test 3 PASSED: Waterbase GeoJSON format\n")
+        print("\n✓ Test 3 PASSED: Disaggregated data collection\n")
         return True
 
     except Exception as e:
@@ -169,32 +169,17 @@ def test_ogc_spatial_with_country():
         return False
 
 
-def test_site_measurements_geojson():
-    """Test site-specific measurements endpoint with GeoJSON format."""
+def test_latest_measurements_collection():
+    """Test latest measurements collection endpoint with GeoJSON format."""
     print("=" * 60)
-    print("Testing Site Measurements with GeoJSON")
+    print("Testing Latest Measurements Collection (OGC)")
     print("=" * 60)
 
-    # First, get a site identifier
-    print("\n5. Getting a sample site identifier...")
-    sites_url = "http://127.0.0.1:8000/ogc/spatial-locations?country_code=FR&limit=1"
+    # Test 5: Latest measurements collection
+    print("\n5. Testing latest measurements collection with GeoJSON format...")
+    url = "http://127.0.0.1:8000/collections/latest-measurements/items?country_code=FR&limit=5"
 
     try:
-        sites_response = requests.get(sites_url)
-        sites_response.raise_for_status()
-        sites_data = sites_response.json()
-
-        if not sites_data.get("features"):
-            print("⚠ No sites found, skipping test")
-            return True
-
-        site_id = sites_data["features"][0].get("id")
-        print(f"  Using site: {site_id}")
-
-        # Test site measurements with GeoJSON
-        print(f"\n  Testing measurements for site {site_id} with GeoJSON format...")
-        url = f"http://127.0.0.1:8000/waterbase/site/{site_id}?format=geojson"
-
         response = requests.get(url)
         response.raise_for_status()
         data = response.json()
@@ -216,7 +201,12 @@ def test_site_measurements_geojson():
             if "resultObservedValue" in props:
                 print(f"  ✓ Has value: {props.get('resultObservedValue')}")
 
-        print("\n✓ Test 5 PASSED: Site measurements GeoJSON format\n")
+            print(f"\n  Sample measurement:")
+            print(f"  - Site: {props.get('monitoringSiteIdentifier')}")
+            print(f"  - Parameter: {props.get('observedPropertyDeterminandCode')}")
+            print(f"  - Value: {props.get('resultObservedValue')}")
+
+        print("\n✓ Test 5 PASSED: Latest measurements collection\n")
         return True
 
     except Exception as e:
@@ -224,15 +214,15 @@ def test_site_measurements_geojson():
         return False
 
 
-def test_country_measurements_geojson():
-    """Test country-specific measurements endpoint with GeoJSON format."""
+def test_monitoring_sites_collection():
+    """Test monitoring sites collection endpoint with GeoJSON format."""
     print("=" * 60)
-    print("Testing Country Measurements with GeoJSON")
+    print("Testing Monitoring Sites Collection (OGC)")
     print("=" * 60)
 
-    # Test 6: Country measurements with GeoJSON
-    print("\n6. Testing latest measurements by country with GeoJSON format...")
-    url = "http://127.0.0.1:8000/waterbase/country/FR?format=geojson"
+    # Test 6: Monitoring sites collection
+    print("\n6. Testing monitoring sites collection with GeoJSON format...")
+    url = "http://127.0.0.1:8000/collections/monitoring-sites/items?country_code=FR&limit=5"
 
     try:
         response = requests.get(url)
@@ -252,7 +242,7 @@ def test_country_measurements_geojson():
             assert country == "FR", f"Expected FR, got {country}"
 
         print(f"✓ All features are from France")
-        print("\n✓ Test 6 PASSED: Country measurements GeoJSON format\n")
+        print("\n✓ Test 6 PASSED: Monitoring sites collection\n")
         return True
 
     except Exception as e:
@@ -296,10 +286,10 @@ if __name__ == "__main__":
 
     results.append(("OGC Spatial Locations", test_ogc_spatial_locations()))
     results.append(("Bounding Box Filter", test_bbox_filter()))
-    results.append(("Waterbase GeoJSON", test_waterbase_geojson()))
+    results.append(("Disaggregated Data Collection", test_disaggregated_data_collection()))
     results.append(("OGC Spatial with Country", test_ogc_spatial_with_country()))
-    results.append(("Site Measurements GeoJSON", test_site_measurements_geojson()))
-    results.append(("Country Measurements GeoJSON", test_country_measurements_geojson()))
+    results.append(("Latest Measurements Collection", test_latest_measurements_collection()))
+    results.append(("Monitoring Sites Collection", test_monitoring_sites_collection()))
     results.append(("Save Sample", save_sample_geojson()))
 
     # Summary

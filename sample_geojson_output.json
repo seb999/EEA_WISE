@@ -1,0 +1,192 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          0.15756,
+          43.05401
+        ]
+      },
+      "properties": {
+        "thematicIdIdentifier": "FRFR05236100",
+        "thematicIdIdentifierScheme": "euMonitoringSiteCode",
+        "monitoringSiteIdentifier": "FRFR05236100",
+        "monitoringSiteName": "PONT DE GERDE",
+        "countryCode": "FR"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -1.56073,
+          43.35571
+        ]
+      },
+      "properties": {
+        "thematicIdIdentifier": "FRFR05237000",
+        "thematicIdIdentifierScheme": "euMonitoringSiteCode",
+        "monitoringSiteIdentifier": "FRFR05237000",
+        "monitoringSiteName": "ST-PEE",
+        "countryCode": "FR"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -1.74205,
+          43.33168
+        ]
+      },
+      "properties": {
+        "thematicIdIdentifier": "FRFR05238500",
+        "thematicIdIdentifierScheme": "euMonitoringSiteCode",
+        "monitoringSiteIdentifier": "FRFR05238500",
+        "monitoringSiteName": "BIRIATOU",
+        "countryCode": "FR"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -2.0605,
+          48.31543
+        ]
+      },
+      "properties": {
+        "thematicIdIdentifier": "FRGLJ062510T",
+        "thematicIdIdentifierScheme": "euMonitoringSiteCode",
+        "monitoringSiteIdentifier": "FRGLJ062510T",
+        "monitoringSiteName": "RETENUE DE ROPHEMEL",
+        "countryCode": "FR"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -2.29798,
+          48.49065
+        ]
+      },
+      "properties": {
+        "thematicIdIdentifier": "FRGLJ112510T",
+        "thematicIdIdentifierScheme": "euMonitoringSiteCode",
+        "monitoringSiteIdentifier": "FRGLJ112510T",
+        "monitoringSiteName": "RETENUE DE L'ARGUENON",
+        "countryCode": "FR"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -4.01565,
+          48.39052
+        ]
+      },
+      "properties": {
+        "thematicIdIdentifier": "FRGLJ340510T",
+        "thematicIdIdentifierScheme": "euMonitoringSiteCode",
+        "monitoringSiteIdentifier": "FRGLJ340510T",
+        "monitoringSiteName": "RETENUE DU DRENNEC",
+        "countryCode": "FR"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -3.87861,
+          48.35228
+        ]
+      },
+      "properties": {
+        "thematicIdIdentifier": "FRGLJ362510T",
+        "thematicIdIdentifierScheme": "euMonitoringSiteCode",
+        "monitoringSiteIdentifier": "FRGLJ362510T",
+        "monitoringSiteName": "RETENUE DE SAINT MICHEL",
+        "countryCode": "FR"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -4.23778,
+          47.88737
+        ]
+      },
+      "properties": {
+        "thematicIdIdentifier": "FRGLJ412510",
+        "thematicIdIdentifierScheme": "euMonitoringSiteCode",
+        "monitoringSiteIdentifier": "FRGLJ412510",
+        "monitoringSiteName": "RETENUE DU MOULIN NEUF",
+        "countryCode": "FR"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -3.25242,
+          48.34808
+        ]
+      },
+      "properties": {
+        "thematicIdIdentifier": "FRGLJ520520T",
+        "thematicIdIdentifierScheme": "euMonitoringSiteCode",
+        "monitoringSiteIdentifier": "FRGLJ520520T",
+        "monitoringSiteName": "RETENUE DE KERNE UHEL",
+        "countryCode": "FR"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -3.01497,
+          48.1965
+        ]
+      },
+      "properties": {
+        "thematicIdIdentifier": "FRGLJ541500R",
+        "thematicIdIdentifierScheme": "euMonitoringSiteCode",
+        "monitoringSiteIdentifier": "FRGLJ541500R",
+        "monitoringSiteName": "COMPLEXE DE GUERLEDAN",
+        "countryCode": "FR"
+      }
+    }
+  ],
+  "metadata": {
+    "source": "EEA WISE Waterbase Spatial Object Data",
+    "table": "Waterbase_S_WISE_SpatialObject_DerivedData",
+    "description": "Monitoring site locations from European Environment Agency",
+    "country_filter": "FR"
+  },
+  "numberMatched": 10,
+  "numberReturned": 10,
+  "links": [
+    {
+      "href": "/ogc/spatial-locations",
+      "rel": "self",
+      "type": "application/geo+json",
+      "title": "This document"
+    }
+  ],
+  "timeStamp": "2026-01-09T09:24:58.777385Z"
+}

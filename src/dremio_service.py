@@ -3,6 +3,7 @@ from typing import Optional, Dict, Any
 import os
 from dotenv import load_dotenv
 from urllib.parse import urljoin
+import uuid
 
 load_dotenv()
 
@@ -10,8 +11,11 @@ class DremioApiService:
     """
     Service to interact with Dremio data lake for EEA water quality data.
 
-    This service provides core data access functionality for querying the Dremio
-    data lake. Only essential methods used by the API are included.
+    This service supports two modes:
+    - Direct mode: Connect directly to Dremio data lake
+    - Middleware mode: Route queries through EEA middleware API
+
+    Mode is controlled by API_MODE environment variable ('dremio' or 'middleware').
     """
 
     def __init__(self,
@@ -32,57 +36,99 @@ class DremioApiService:
             ssl: Whether to use SSL (defaults to DREMIO_SSL env var)
             timeout: Request timeout in milliseconds (defaults to DREMIO_TIMEOUT env var)
         """
-        # Use provided values or fall back to environment variables
-        self.username = username or os.getenv('DREMIO_USERNAME')
-        self.password = password or os.getenv('DREMIO_PASSWORD')
-        self.server = server or os.getenv('DREMIO_SERVER')
-        self.server_auth = server_auth or os.getenv('DREMIO_SERVER_AUTH')
+        # Determine API mode
+        self.api_mode = os.getenv('API_MODE', 'dremio').lower()
 
-        # Handle SSL boolean from environment
-        if ssl is not None:
-            self.ssl = ssl
-        else:
-            ssl_env = os.getenv('DREMIO_SSL', 'false').lower()
-            self.ssl = ssl_env in ('true', '1', 'yes', 'on')
+        # Middleware configuration
+        if self.api_mode == 'middleware':
+            self.middleware_url = os.getenv('EEA_MIDDLEWARE_BASE_URL')
+            if not self.middleware_url:
+                raise ValueError("EEA_MIDDLEWARE_BASE_URL is required when API_MODE=middleware")
 
-        # Handle timeout from environment
-        if timeout is not None:
-            self.timeout = timeout / 1000  # Convert to seconds
-        else:
-            timeout_env = int(os.getenv('DREMIO_TIMEOUT', '60000'))
-            self.timeout = timeout_env / 1000  # Convert to seconds
+            # Handle SSL boolean from environment
+            if ssl is not None:
+                self.ssl = ssl
+            else:
+                ssl_env = os.getenv('DREMIO_SSL', 'false').lower()
+                self.ssl = ssl_env in ('true', '1', 'yes', 'on')
 
-        # Validate required credentials
-        if not self.username or not self.password:
-            raise ValueError("Dremio username and password are required. Set DREMIO_USERNAME and DREMIO_PASSWORD environment variables.")
+            # Handle timeout from environment
+            if timeout is not None:
+                self.timeout = timeout / 1000  # Convert to seconds
+            else:
+                timeout_env = int(os.getenv('DREMIO_TIMEOUT', '60000'))
+                self.timeout = timeout_env / 1000  # Convert to seconds
 
-        if not self.server or not self.server_auth:
-            raise ValueError("Dremio server URLs are required. Set DREMIO_SERVER and DREMIO_SERVER_AUTH environment variables.")
+            # Configure session for middleware
+            self.session = requests.Session()
+            self.session.headers.update({
+                'User-Agent': 'EEA-Dremio-Client/1.0',
+                'Content-Type': 'application/json',
+                'Accept': 'text/plain'
+            })
 
-        self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': 'EEA-Dremio-Client/1.0',
-            'Content-Type': 'application/json',
-            'Connection': 'keep-alive'
-        })
+            # Disable SSL verification if ssl is False
+            if not self.ssl:
+                self.session.verify = False
+                import urllib3
+                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-        # Configure session for better connection handling
-        adapter = requests.adapters.HTTPAdapter(
-            max_retries=3,
-            pool_connections=10,
-            pool_maxsize=10
-        )
-        self.session.mount('http://', adapter)
-        self.session.mount('https://', adapter)
+            self.token = None
+            print(f"DEBUG: Initialized in MIDDLEWARE mode, endpoint: {self.middleware_url}")
 
-        # Disable SSL verification if ssl is False
-        if not self.ssl:
-            self.session.verify = False
-            import urllib3
-            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        else:  # Direct Dremio mode
+            # Use provided values or fall back to environment variables
+            self.username = username or os.getenv('DREMIO_USERNAME')
+            self.password = password or os.getenv('DREMIO_PASSWORD')
+            self.server = server or os.getenv('DREMIO_SERVER')
+            self.server_auth = server_auth or os.getenv('DREMIO_SERVER_AUTH')
 
-        self.token = None
-        self._authenticate()
+            # Handle SSL boolean from environment
+            if ssl is not None:
+                self.ssl = ssl
+            else:
+                ssl_env = os.getenv('DREMIO_SSL', 'false').lower()
+                self.ssl = ssl_env in ('true', '1', 'yes', 'on')
+
+            # Handle timeout from environment
+            if timeout is not None:
+                self.timeout = timeout / 1000  # Convert to seconds
+            else:
+                timeout_env = int(os.getenv('DREMIO_TIMEOUT', '60000'))
+                self.timeout = timeout_env / 1000  # Convert to seconds
+
+            # Validate required credentials
+            if not self.username or not self.password:
+                raise ValueError("Dremio username and password are required. Set DREMIO_USERNAME and DREMIO_PASSWORD environment variables.")
+
+            if not self.server or not self.server_auth:
+                raise ValueError("Dremio server URLs are required. Set DREMIO_SERVER and DREMIO_SERVER_AUTH environment variables.")
+
+            self.session = requests.Session()
+            self.session.headers.update({
+                'User-Agent': 'EEA-Dremio-Client/1.0',
+                'Content-Type': 'application/json',
+                'Connection': 'keep-alive'
+            })
+
+            # Configure session for better connection handling
+            adapter = requests.adapters.HTTPAdapter(
+                max_retries=3,
+                pool_connections=10,
+                pool_maxsize=10
+            )
+            self.session.mount('http://', adapter)
+            self.session.mount('https://', adapter)
+
+            # Disable SSL verification if ssl is False
+            if not self.ssl:
+                self.session.verify = False
+                import urllib3
+                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+            self.token = None
+            self._authenticate()
+            print(f"DEBUG: Initialized in DIRECT mode, server: {self.server}")
 
     def _authenticate(self) -> None:
         """Authenticate with Dremio and get access token."""
