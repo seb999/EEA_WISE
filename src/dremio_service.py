@@ -64,10 +64,10 @@ class DremioApiService:
             self.session.headers.update({
                 'User-Agent': 'EEA-Dremio-Client/1.0',
                 'Content-Type': 'application/json',
-                'Accept': 'text/plain'
+                'Accept': 'application/json'
             })
 
-            # Disable SSL verification if ssl is False
+            # Disable SSL verification if ssl is False (no retries for middleware to avoid Windows SSL issues)
             if not self.ssl:
                 self.session.verify = False
                 import urllib3
@@ -171,11 +171,20 @@ class DremioApiService:
         Returns:
             Dictionary with service information
         """
-        return {
-            "configured_mode": "dremio",
-            "active_service": "dremio",
-            "service_class": self.__class__.__name__
-        }
+        if self.api_mode == 'middleware':
+            return {
+                "configured_mode": "middleware",
+                "active_service": "middleware",
+                "middleware_url": self.middleware_url,
+                "service_class": self.__class__.__name__
+            }
+        else:
+            return {
+                "configured_mode": "dremio",
+                "active_service": "dremio",
+                "dremio_server": self.server,
+                "service_class": self.__class__.__name__
+            }
 
     def execute_query(self,
                      sql_query: str,
@@ -201,13 +210,32 @@ class DremioApiService:
 
         print(f"DEBUG: Final SQL query: {sql_query}")
 
+        # Route to appropriate implementation based on API mode
+        if self.api_mode == 'middleware':
+            return self._execute_query_middleware(sql_query)
+        else:
+            return self._execute_query_direct(sql_query)
+
+    def _execute_query_direct(self, sql_query: str) -> Dict[str, Any]:
+        """
+        Execute query directly against Dremio.
+
+        Args:
+            sql_query: SQL query to execute
+
+        Returns:
+            Dictionary containing query results
+
+        Raises:
+            Exception: If query execution fails
+        """
         query_url = urljoin(self.server, '/apiv2/sql')
         query_data = {"sql": sql_query}
 
         try:
             # Use longer timeout for queries (3x the default timeout)
             query_timeout = self.timeout * 3
-            print(f"DEBUG: Executing query with timeout: {query_timeout}s")
+            print(f"DEBUG: Executing DIRECT query with timeout: {query_timeout}s")
 
             response = self.session.post(
                 query_url,
@@ -236,6 +264,66 @@ class DremioApiService:
             raise Exception(f"Query execution timed out after {query_timeout}s: {str(e)}")
         except requests.exceptions.ConnectionError as e:
             raise Exception(f"Connection error to Dremio server: {str(e)}")
+        except requests.exceptions.RequestException as e:
+            raise Exception(f"Query execution failed: {str(e)}")
+
+    def _execute_query_middleware(self, sql_query: str) -> Dict[str, Any]:
+        """
+        Execute query through middleware API.
+
+        Args:
+            sql_query: SQL query to execute
+
+        Returns:
+            Dictionary containing query results
+
+        Raises:
+            Exception: If query execution fails
+        """
+        query_url = urljoin(self.middleware_url, '/api/Dremio/WiseQuery')
+        query_data = {"query": sql_query}
+
+        try:
+            # Use longer timeout for queries (3x the default timeout)
+            query_timeout = self.timeout * 3
+            print(f"DEBUG: Executing MIDDLEWARE query to {query_url} with timeout: {query_timeout}s")
+            print(f"DEBUG: SSL verification: {self.ssl}")
+
+            # Use direct requests.post instead of session to avoid Windows SSL issues
+            response = requests.post(
+                query_url,
+                json=query_data,
+                headers={
+                    'User-Agent': 'EEA-Dremio-Client/1.0',
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                },
+                timeout=query_timeout,
+                verify=self.ssl
+            )
+
+            print(f"DEBUG: Response status: {response.status_code}")
+
+            if not response.ok:
+                print(f"DEBUG: Middleware error response: {response.status_code} - {response.text}")
+                try:
+                    error_detail = response.json()
+                    error_msg = error_detail.get('errorMessage', response.text)
+                except:
+                    error_msg = response.text
+                raise Exception(f"Middleware API error {response.status_code}: {error_msg}")
+
+            # Parse JSON response - WiseQuery endpoint returns Dremio-compatible format
+            result = response.json()
+            print(f"DEBUG: Query executed successfully through middleware")
+            print(f"DEBUG: Result has {len(result.get('rows', []))} rows and {len(result.get('columns', []))} columns")
+
+            return result
+
+        except requests.exceptions.Timeout as e:
+            raise Exception(f"Query execution timed out after {query_timeout}s: {str(e)}")
+        except requests.exceptions.ConnectionError as e:
+            raise Exception(f"Connection error to middleware server: {str(e)}")
         except requests.exceptions.RequestException as e:
             raise Exception(f"Query execution failed: {str(e)}")
 
