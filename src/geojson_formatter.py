@@ -163,13 +163,19 @@ class GeoJSONFormatter:
 
     @staticmethod
     def format_spatial_locations(spatial_data: List[Dict[str, Any]],
-                                 country_code: Optional[str] = None) -> Dict[str, Any]:
+                                 country_code: Optional[str] = None,
+                                 lat_field: str = 'latitude',
+                                 lon_field: str = 'longitude',
+                                 id_field: str = 'thematicIdIdentifier') -> Dict[str, Any]:
         """
         Format spatial location data from Waterbase_S_WISE_SpatialObject_DerivedData table.
 
         Args:
             spatial_data: List of spatial object records from Dremio
             country_code: Optional country filter for metadata
+            lat_field: Field name for latitude (default: 'latitude')
+            lon_field: Field name for longitude (default: 'longitude')
+            id_field: Field name for feature ID (default: 'thematicIdIdentifier')
 
         Returns:
             GeoJSON FeatureCollection with monitoring site locations
@@ -185,9 +191,9 @@ class GeoJSONFormatter:
 
         return GeoJSONFormatter.to_feature_collection(
             spatial_data,
-            lat_field='latitude',
-            lon_field='longitude',
-            id_field='thematic_identifier',
+            lat_field=lat_field,
+            lon_field=lon_field,
+            id_field=id_field,
             metadata=metadata
         )
 

@@ -552,8 +552,8 @@ async def _get_monitoring_sites_items(
         monitoringSiteIdentifier,
         monitoringSiteName,
         countryCode,
-        lat,
-        lon
+        lat as latitude,
+        lon as longitude
     FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_S_WISE_SpatialObject_DerivedData"
     WHERE 1=1
     """
