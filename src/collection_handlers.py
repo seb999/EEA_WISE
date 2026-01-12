@@ -37,6 +37,24 @@ async def get_monitoring_sites_items(
     Returns:
         GeoJSON FeatureCollection with monitoring site locations
     """
+    # Build WHERE conditions first for optimal filtering
+    where_conditions = []
+
+    if country_code:
+        where_conditions.append(f"countryCode = '{country_code}'")
+
+    if bbox:
+        min_lon, min_lat, max_lon, max_lat = validate_bbox(bbox)
+        where_conditions.append(f"lon BETWEEN {min_lon} AND {max_lon}")
+        where_conditions.append(f"lat BETWEEN {min_lat} AND {max_lat}")
+
+    # Always filter for non-null coordinates
+    where_conditions.append("lat IS NOT NULL")
+    where_conditions.append("lon IS NOT NULL")
+
+    where_clause = "WHERE " + " AND ".join(where_conditions) if where_conditions else ""
+
+    # Optimized query - filter first, then select
     query = f"""
     SELECT
         thematicIdIdentifier,
@@ -47,25 +65,20 @@ async def get_monitoring_sites_items(
         lat as latitude,
         lon as longitude
     FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_S_WISE_SpatialObject_DerivedData"
-    WHERE 1=1
+    {where_clause}
     """
 
-    # Add filters
-    if country_code:
-        query += f" AND countryCode = '{country_code}'"
-
-    if bbox:
-        min_lon, min_lat, max_lon, max_lat = validate_bbox(bbox)
-        query += f" AND lon BETWEEN {min_lon} AND {max_lon}"
-        query += f" AND lat BETWEEN {min_lat} AND {max_lat}"
-
-    # Get total count for pagination
-    count_query = f"SELECT COUNT(*) as total FROM ({query}) AS subquery"
+    # Get total count - use COUNT(*) directly for better performance
+    count_query = f"""
+    SELECT COUNT(*) as total
+    FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_S_WISE_SpatialObject_DerivedData"
+    {where_clause}
+    """
     count_result = data_service.execute_query(count_query)
     count_data = flatten_dremio_data(count_result)
     total_count = count_data[0]['total'] if count_data else 0
 
-    # Add pagination
+    # Add pagination to main query
     query += f" LIMIT {limit} OFFSET {offset}"
 
     result = data_service.execute_query(query)
@@ -125,47 +138,72 @@ async def get_latest_measurements_items(
     Returns:
         GeoJSON FeatureCollection with latest measurements
     """
-    # Base query with coordinate enrichment
+    # Build WHERE conditions for filtering BEFORE window function
+    where_conditions = []
+
+    if country_code:
+        where_conditions.append(f"w.countryCode = '{country_code}'")
+
+    if bbox:
+        min_lon, min_lat, max_lon, max_lat = validate_bbox(bbox)
+        where_conditions.append(f"s.lon BETWEEN {min_lon} AND {max_lon}")
+        where_conditions.append(f"s.lat BETWEEN {min_lat} AND {max_lat}")
+
+    # Always filter for non-null coordinates and dates
+    where_conditions.append("s.lat IS NOT NULL")
+    where_conditions.append("s.lon IS NOT NULL")
+    where_conditions.append("w.phenomenonTimeSamplingDate IS NOT NULL")
+
+    where_clause = "WHERE " + " AND ".join(where_conditions) if where_conditions else ""
+
+    # Optimized query - filter FIRST, then apply window function
     query = f"""
-    WITH ranked_data AS (
+    WITH filtered_data AS (
         SELECT
             w.*,
             s.lat as coordinate_latitude,
             s.lon as coordinate_longitude,
-            s.monitoringSiteName as coordinate_siteName,
-            ROW_NUMBER() OVER (
-                PARTITION BY w.monitoringSiteIdentifier, w.observedPropertyDeterminandCode
-                ORDER BY w.phenomenonTimeSamplingDate DESC
-            ) as rn
+            s.monitoringSiteName as coordinate_siteName
         FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_T_WISE6_DisaggregatedData" w
-        LEFT JOIN "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_S_WISE_SpatialObject_DerivedData" s
+        INNER JOIN "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_S_WISE_SpatialObject_DerivedData" s
             ON w.monitoringSiteIdentifier = s.thematicIdIdentifier
+            AND w.monitoringSiteIdentifierScheme = s.thematicIdIdentifierScheme
+        {where_clause}
+    ),
+    ranked_data AS (
+        SELECT
+            *,
+            ROW_NUMBER() OVER (
+                PARTITION BY monitoringSiteIdentifier, observedPropertyDeterminandCode
+                ORDER BY phenomenonTimeSamplingDate DESC
+            ) as rn
+        FROM filtered_data
     )
     SELECT *
     FROM ranked_data
     WHERE rn = 1
     """
 
-    # Add filters
-    conditions = []
-    if country_code:
-        conditions.append(f"countryCode = '{country_code}'")
-
-    if bbox:
-        min_lon, min_lat, max_lon, max_lat = validate_bbox(bbox)
-        conditions.append(f"coordinate_longitude BETWEEN {min_lon} AND {max_lon}")
-        conditions.append(f"coordinate_latitude BETWEEN {min_lat} AND {max_lat}")
-
-    if conditions:
-        query += " AND " + " AND ".join(conditions)
-
-    # Get total count for pagination
-    count_query = f"SELECT COUNT(*) as total FROM ({query}) AS subquery"
+    # Optimized count query - count filtered data before ranking
+    count_query = f"""
+    WITH filtered_data AS (
+        SELECT
+            w.monitoringSiteIdentifier,
+            w.observedPropertyDeterminandCode
+        FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_T_WISE6_DisaggregatedData" w
+        INNER JOIN "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_S_WISE_SpatialObject_DerivedData" s
+            ON w.monitoringSiteIdentifier = s.thematicIdIdentifier
+            AND w.monitoringSiteIdentifierScheme = s.thematicIdIdentifierScheme
+        {where_clause}
+    )
+    SELECT COUNT(DISTINCT monitoringSiteIdentifier || '|' || observedPropertyDeterminandCode) as total
+    FROM filtered_data
+    """
     count_result = data_service.execute_query(count_query)
     count_data = flatten_dremio_data(count_result)
     total_count = count_data[0]['total'] if count_data else 0
 
-    # Add pagination
+    # Add pagination to main query
     query += f" LIMIT {limit} OFFSET {offset}"
 
     result = data_service.execute_query(query)
@@ -226,7 +264,24 @@ async def get_disaggregated_data_items(
     Returns:
         GeoJSON FeatureCollection with disaggregated water quality data
     """
-    # Base query with coordinate enrichment
+    # Build WHERE conditions first for optimal filtering
+    where_conditions = []
+
+    if country_code:
+        where_conditions.append(f"w.countryCode = '{country_code}'")
+
+    if bbox:
+        min_lon, min_lat, max_lon, max_lat = validate_bbox(bbox)
+        where_conditions.append(f"s.lon BETWEEN {min_lon} AND {max_lon}")
+        where_conditions.append(f"s.lat BETWEEN {min_lat} AND {max_lat}")
+
+    # Always filter for non-null coordinates
+    where_conditions.append("s.lat IS NOT NULL")
+    where_conditions.append("s.lon IS NOT NULL")
+
+    where_clause = "WHERE " + " AND ".join(where_conditions) if where_conditions else ""
+
+    # Optimized query - use INNER JOIN and filter early
     query = f"""
     SELECT
         w.*,
@@ -234,27 +289,26 @@ async def get_disaggregated_data_items(
         s.lon as coordinate_longitude,
         s.monitoringSiteName as coordinate_siteName
     FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_T_WISE6_DisaggregatedData" w
-    LEFT JOIN "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_S_WISE_SpatialObject_DerivedData" s
+    INNER JOIN "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_S_WISE_SpatialObject_DerivedData" s
         ON w.monitoringSiteIdentifier = s.thematicIdIdentifier
-    WHERE 1=1
+        AND w.monitoringSiteIdentifierScheme = s.thematicIdIdentifierScheme
+    {where_clause}
     """
 
-    # Add filters
-    if country_code:
-        query += f" AND w.countryCode = '{country_code}'"
-
-    if bbox:
-        min_lon, min_lat, max_lon, max_lat = validate_bbox(bbox)
-        query += f" AND s.lon BETWEEN {min_lon} AND {max_lon}"
-        query += f" AND s.lat BETWEEN {min_lat} AND {max_lat}"
-
-    # Get total count for pagination
-    count_query = f"SELECT COUNT(*) as total FROM ({query}) AS subquery"
+    # Optimized count query - count only filtered rows
+    count_query = f"""
+    SELECT COUNT(*) as total
+    FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_T_WISE6_DisaggregatedData" w
+    INNER JOIN "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_S_WISE_SpatialObject_DerivedData" s
+        ON w.monitoringSiteIdentifier = s.thematicIdIdentifier
+        AND w.monitoringSiteIdentifierScheme = s.thematicIdIdentifierScheme
+    {where_clause}
+    """
     count_result = data_service.execute_query(count_query)
     count_data = flatten_dremio_data(count_result)
     total_count = count_data[0]['total'] if count_data else 0
 
-    # Add pagination
+    # Add pagination to main query
     query += f" LIMIT {limit} OFFSET {offset}"
 
     result = data_service.execute_query(query)

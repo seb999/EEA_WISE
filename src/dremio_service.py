@@ -280,7 +280,7 @@ class DremioApiService:
         Raises:
             Exception: If query execution fails
         """
-        query_url = urljoin(self.middleware_url, '/api/Dremio/WiseQuery')
+        query_url = urljoin(self.middleware_url, '/api/Dremio/query-execution')
         query_data = {"query": sql_query}
 
         try:
