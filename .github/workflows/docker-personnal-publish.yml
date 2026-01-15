@@ -30,7 +30,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ secrets.DOCKERHUB_NAMESPACE }}/${{ secrets.IMAGE_NAME }}
+          images: ${{ vars.DOCKERHUB_NAMESPACE }}/${{ vars.IMAGE_NAME }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,format=long
