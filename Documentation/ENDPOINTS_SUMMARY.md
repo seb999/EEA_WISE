@@ -1,6 +1,6 @@
 # API Endpoints Summary
 
-## Current API Endpoints (v3.2.0)
+## Current API Endpoints (v3.2.0).  sdfsdfsdf
 
 ### Health & Status
 | Endpoint | Method | Description |
