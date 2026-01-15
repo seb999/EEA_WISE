@@ -269,7 +269,7 @@ class DremioApiService:
 
     def _execute_query_middleware(self, sql_query: str) -> Dict[str, Any]:
         """
-        Execute query through middleware API.
+        Execute SQL query through middleware SQL endpoint.
 
         Args:
             sql_query: SQL query to execute
@@ -286,8 +286,7 @@ class DremioApiService:
         try:
             # Use longer timeout for queries (3x the default timeout)
             query_timeout = self.timeout * 3
-            print(f"DEBUG: Executing MIDDLEWARE query to {query_url} with timeout: {query_timeout}s")
-            print(f"DEBUG: SSL verification: {self.ssl}")
+            print(f"DEBUG: Executing MIDDLEWARE SQL query to {query_url} with timeout: {query_timeout}s")
 
             # Use direct requests.post instead of session to avoid Windows SSL issues
             response = requests.post(
