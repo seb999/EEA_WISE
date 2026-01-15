@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  eea-wise-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: eea-wise-api
+    ports:
+      - "8000:8000"
+    environment:
+      # Dremio Configuration
+      DREMIO_USERNAME: ${DREMIO_USERNAME}
+      DREMIO_PASSWORD: ${DREMIO_PASSWORD}
+      DREMIO_SERVER: ${DREMIO_SERVER}
+      DREMIO_SERVER_AUTH: ${DREMIO_SERVER_AUTH}
+      DREMIO_SSL: ${DREMIO_SSL:-false}
+      DREMIO_LIMIT: ${DREMIO_LIMIT:-300000}
+      DREMIO_TIMEOUT: ${DREMIO_TIMEOUT:-60000}
+
+      # API Mode Configuration
+      API_MODE: ${API_MODE:-middleware}
+
+      # Middleware Configuration
+      EEA_MIDDLEWARE_BASE_URL: ${EEA_MIDDLEWARE_BASE_URL}
+
+    # Mount .env file (optional - environment variables above take precedence)
+    # env_file:
+    #   - .env
+
+    restart: unless-stopped
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/healthCheck')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
