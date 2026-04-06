@@ -27,15 +27,15 @@ COPY src/ src/
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser
 
-# Expose port 8000
-EXPOSE 8000
+# Expose port 8081
+EXPOSE 8081
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:8000/healthCheck')" || exit 1
+    CMD python -c "import requests; requests.get('http://localhost:8081/healthCheck')" || exit 1
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 
 # Run the application
-CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8081"]

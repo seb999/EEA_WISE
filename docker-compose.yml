@@ -7,7 +7,7 @@ services:
       dockerfile: Dockerfile
     container_name: eea-wise-api
     ports:
-      - "8000:8000"
+      - "8081:8081"
     environment:
       # Dremio Configuration
       DREMIO_USERNAME: ${DREMIO_USERNAME}
@@ -32,7 +32,7 @@ services:
 
     # Health check
     healthcheck:
-      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/healthCheck')"]
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8081/healthCheck')"]
       interval: 30s
       timeout: 10s
       retries: 3
