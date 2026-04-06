@@ -78,7 +78,7 @@ app.include_router(system.router)
 logger.info("✓ All endpoint routers registered successfully")
 
 
-def start_server(host: str = "127.0.0.1", port: int = 8000):
+def start_server(host: str = "127.0.0.1", port: int = 8081):
     """Start the FastAPI server."""
     uvicorn.run(app, host=host, port=port)
 

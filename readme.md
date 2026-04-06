@@ -25,7 +25,7 @@ pip install -r requirements.txt
 python app.py
 
 # Or run directly with uvicorn
-uvicorn src.api_server:app --host 127.0.0.1 --port 8000 --reload
+uvicorn src.api_server:app --host 127.0.0.1 --port 8081 --reload
 ```
 
 #### Demo Scripts
@@ -116,8 +116,8 @@ This ensures accurate coordinate matching and prevents identifier conflicts betw
 ### API Documentation
 
 When running the service, visit:
-- `http://127.0.0.1:8000/docs` - Interactive Swagger UI documentation
-- `http://127.0.0.1:8000/redoc` - ReDoc documentation
+- `http://127.0.0.1:8081/docs` - Interactive Swagger UI documentation
+- `http://127.0.0.1:8081/redoc` - ReDoc documentation
 
 ### Key Methods
 
