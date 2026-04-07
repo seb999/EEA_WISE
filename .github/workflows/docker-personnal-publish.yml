@@ -46,3 +46,18 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Deploy to server
+        if: github.ref == 'refs/heads/main'
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: 204.168.216.155
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            docker pull seb9999/eea-wise-api:latest
+            docker rm -f wise-app || true
+            docker run -d -p 8081:8081 \
+              --env-file /root/wise.env \
+              --name wise-app \
+              seb9999/eea-wise-api:latest
