@@ -59,6 +59,6 @@ jobs:
             docker pull seb9999/eea-wise-api:latest
             docker rm -f wise-app || true
             docker run -d -p 8081:8081 \
-              --env-file /root/wise.env \
+              --env-file /root/WISE/wise.env \
               --name wise-app \
               seb9999/eea-wise-api:latest
