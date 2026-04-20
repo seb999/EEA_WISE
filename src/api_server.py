@@ -6,6 +6,8 @@ for accessing water quality data from the EEA WISE_SOE database.
 """
 
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
+from pathlib import Path
 import uvicorn
 from .dremio_service import DremioApiService
 from .ogc_features import OGCCollections
@@ -76,6 +78,12 @@ app.include_router(metadata.router)
 app.include_router(system.router)
 
 logger.info("✓ All endpoint routers registered successfully")
+
+FAVICON_PATH = Path(__file__).parent.parent / "static" / "favicon.svg"
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    return FileResponse(FAVICON_PATH, media_type="image/svg+xml")
 
 
 def start_server(host: str = "127.0.0.1", port: int = 8081):

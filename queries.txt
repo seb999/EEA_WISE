@@ -1,0 +1,108 @@
+1. /collections/monitoring-sites/items — Monitoring Sites
+Data query:
+
+
+SELECT
+    thematicIdIdentifier, thematicIdIdentifierScheme,
+    monitoringSiteIdentifier, monitoringSiteName, countryCode,
+    lat as latitude, lon as longitude
+FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_S_WISE_SpatialObject_DerivedData"
+WHERE <filters> LIMIT {limit} OFFSET {offset}
+Count query:
+
+
+SELECT COUNT(*) as total
+FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_S_WISE_SpatialObject_DerivedData"
+WHERE <filters>
+2. /collections/latest-measurements/items — Latest Measurements
+
+WITH latest_dates AS (
+    SELECT w.monitoringSiteIdentifier, w.observedPropertyDeterminandCode,
+           MAX(w.phenomenonTimeSamplingDate) as max_date
+    FROM ...Waterbase_T_WISE6_DisaggregatedData w
+    INNER JOIN ...Waterbase_S_WISE_SpatialObject_DerivedData s
+        ON w.monitoringSiteIdentifier = s.thematicIdIdentifier
+        AND w.monitoringSiteIdentifierScheme = s.thematicIdIdentifierScheme
+    WHERE <filters>
+    GROUP BY w.monitoringSiteIdentifier, w.observedPropertyDeterminandCode
+)
+SELECT w.monitoringSiteIdentifier, w.monitoringSiteIdentifierScheme,
+       w.observedPropertyDeterminandCode, w.observedPropertyDeterminandLabel,
+       w.phenomenonTimeSamplingDate, w.resultObservedValue, w.resultUom, w.countryCode,
+       s.lat as coordinate_latitude, s.lon as coordinate_longitude,
+       s.monitoringSiteName as coordinate_siteName
+FROM ...Waterbase_T_WISE6_DisaggregatedData w
+INNER JOIN latest_dates ld ON w.monitoringSiteIdentifier = ld.monitoringSiteIdentifier
+    AND w.observedPropertyDeterminandCode = ld.observedPropertyDeterminandCode
+    AND w.phenomenonTimeSamplingDate = ld.max_date
+INNER JOIN ...Waterbase_S_WISE_SpatialObject_DerivedData s
+    ON w.monitoringSiteIdentifier = s.thematicIdIdentifier
+    AND w.monitoringSiteIdentifierScheme = s.thematicIdIdentifierScheme
+WHERE <filters> LIMIT {limit} OFFSET {offset}
+3. /collections/disaggregated-data/items — Disaggregated Data
+
+SELECT w.monitoringSiteIdentifier, w.monitoringSiteIdentifierScheme,
+       w.observedPropertyDeterminandCode, w.observedPropertyDeterminandLabel,
+       w.phenomenonTimeSamplingDate, w.resultObservedValue, w.resultUom,
+       w.countryCode, w.parameterWaterBodyCategory,
+       s.lat as coordinate_latitude, s.lon as coordinate_longitude,
+       s.monitoringSiteName as coordinate_siteName
+FROM ...Waterbase_T_WISE6_DisaggregatedData w
+INNER JOIN ...Waterbase_S_WISE_SpatialObject_DerivedData s
+    ON w.monitoringSiteIdentifier = s.thematicIdIdentifier
+    AND w.monitoringSiteIdentifierScheme = s.thematicIdIdentifierScheme
+WHERE <filters>
+ORDER BY w.phenomenonTimeSamplingDate DESC
+LIMIT {limit} OFFSET {offset}
+4. /timeseries/site/{monitoringSiteIdentifier} — Time-Series
+Raw:
+
+
+SELECT w.*, s.lat as coordinate_latitude, s.lon as coordinate_longitude,
+       s.thematicIdIdentifier as coordinate_thematic_identifier,
+       s.thematicIdIdentifierScheme as coordinate_thematic_scheme,
+       s.monitoringSiteName as coordinate_site_name
+FROM ...Waterbase_T_WISE6_DisaggregatedData w
+LEFT JOIN ...Waterbase_S_WISE_SpatialObject_DerivedData s
+    ON w.monitoringSiteIdentifier = s.thematicIdIdentifier
+    AND w.monitoringSiteIdentifierScheme = s.thematicIdIdentifierScheme
+WHERE w.monitoringSiteIdentifier = '{site}'
+  AND (w.observedPropertyDeterminandCode = '{param}'
+       OR LOWER(w.observedPropertyDeterminandLabel) = LOWER('{param}'))
+ORDER BY w.phenomenonTimeSamplingDate DESC
+Monthly:
+
+
+SELECT w.monitoringSiteIdentifier, w.monitoringSiteIdentifierScheme, w.countryCode,
+       w.observedPropertyDeterminandCode, w.observedPropertyDeterminandLabel, w.resultUom,
+       DATE_TRUNC('month', w.phenomenonTimeSamplingDate) as time_period,
+       AVG(CAST(w.resultObservedValue AS DOUBLE)) as avg_value,
+       MIN(...) as min_value, MAX(...) as max_value, COUNT(*) as sample_count,
+       s.lat, s.lon, ...
+FROM ...Waterbase_T_WISE6_DisaggregatedData w
+LEFT JOIN ...Waterbase_S_WISE_SpatialObject_DerivedData s ON ...
+WHERE <filters>
+GROUP BY <columns>
+ORDER BY time_period DESC
+Yearly: same as monthly but with w.phenomenonTimeSamplingDate_year as time_period.
+
+5. /parameters — Available Parameters
+
+SELECT DISTINCT observedPropertyDeterminandCode,
+       observedPropertyDeterminandLabel, resultUom, COUNT(*) as measurement_count
+FROM ...Waterbase_T_WISE6_DisaggregatedData
+GROUP BY observedPropertyDeterminandCode, observedPropertyDeterminandLabel, resultUom
+ORDER BY measurement_count DESC
+6. /ogc/spatial-locations (Legacy)
+
+SELECT thematicIdIdentifier, thematicIdIdentifierScheme,
+       lat as latitude, lon as longitude,
+       monitoringSiteIdentifier, monitoringSiteName, countryCode
+FROM ...Waterbase_S_WISE_SpatialObject_DerivedData
+WHERE lat IS NOT NULL AND lon IS NOT NULL
+  AND UPPER(countryCode) = UPPER('{countryCode}')
+LIMIT {limit}
+Tables used:
+
+"Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_T_WISE6_DisaggregatedData" — measurements
+"Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_S_WISE_SpatialObject_DerivedData" — spatial/coordinates

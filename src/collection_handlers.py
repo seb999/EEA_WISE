@@ -10,7 +10,7 @@ from typing import Dict, Any, Optional
 from fastapi import Request, HTTPException
 from datetime import datetime
 
-from .utils import validate_bbox, flatten_dremio_data, format_optimized_coordinates
+from .utils import validate_bbox, flatten_dremio_data
 from .geojson_formatter import GeoJSONFormatter
 from .ogc_features import OGCLinks
 
@@ -37,55 +37,47 @@ async def get_monitoring_sites_items(
     Returns:
         GeoJSON FeatureCollection with monitoring site locations
     """
-    # Build WHERE conditions first for optimal filtering
-    where_conditions = []
+    # View path for spatial data
+    VIEW_PATH = "discoData.gold.WISE_SOE.latest.Waterbase_V_MonitoringSites"
+
+    # Fields to select
+    fields = [
+        "thematicIdIdentifier",
+        "thematicIdIdentifierScheme",
+        "monitoringSiteIdentifier",
+        "monitoringSiteName",
+        "countryCode",
+        "lat",
+        "lon"
+    ]
+
+    # Build filters
+    filters = []
 
     if country_code:
-        where_conditions.append(f"countryCode = '{country_code}'")
+        filters.append({"fieldName": "countryCode", "condition": "=", "values": [country_code], "concat": "AND"})
 
     if bbox:
         min_lon, min_lat, max_lon, max_lat = validate_bbox(bbox)
-        where_conditions.append(f"lon BETWEEN {min_lon} AND {max_lon}")
-        where_conditions.append(f"lat BETWEEN {min_lat} AND {max_lat}")
+        filters.append({"fieldName": "lon", "condition": ">=", "values": [str(min_lon)], "concat": "AND"})
+        filters.append({"fieldName": "lon", "condition": "<=", "values": [str(max_lon)], "concat": "AND"})
+        filters.append({"fieldName": "lat", "condition": ">=", "values": [str(min_lat)], "concat": "AND"})
+        filters.append({"fieldName": "lat", "condition": "<=", "values": [str(max_lat)], "concat": "AND"})
 
-    # Always filter for non-null coordinates
-    where_conditions.append("lat IS NOT NULL")
-    where_conditions.append("lon IS NOT NULL")
+    # Get data with pagination — middleware returns a flat list of dicts
+    result = data_service.execute_view_query(VIEW_PATH, fields, filters, limit=limit, offset=offset)
+    data = result if isinstance(result, list) else flatten_dremio_data(result)
 
-    where_clause = "WHERE " + " AND ".join(where_conditions) if where_conditions else ""
+    # Use returned row count (exact count not available via view query)
+    total_count = len(data)
 
-    # Optimized query - filter first, then select
-    query = f"""
-    SELECT
-        thematicIdIdentifier,
-        thematicIdIdentifierScheme,
-        monitoringSiteIdentifier,
-        monitoringSiteName,
-        countryCode,
-        lat as latitude,
-        lon as longitude
-    FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_S_WISE_SpatialObject_DerivedData"
-    {where_clause}
-    """
-
-    # Get total count - use COUNT(*) directly for better performance
-    count_query = f"""
-    SELECT COUNT(*) as total
-    FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_S_WISE_SpatialObject_DerivedData"
-    {where_clause}
-    """
-    count_result = data_service.execute_query(count_query)
-    count_data = flatten_dremio_data(count_result)
-    total_count = count_data[0]['total'] if count_data else 0
-
-    # Add pagination to main query
-    query += f" LIMIT {limit} OFFSET {offset}"
-
-    result = data_service.execute_query(query)
-    flattened_data = flatten_dremio_data(result)
+    # Rename lat/lon to latitude/longitude for GeoJSON formatter
+    for item in data:
+        item['latitude'] = item.pop('lat', None)
+        item['longitude'] = item.pop('lon', None)
 
     # Convert to GeoJSON
-    geojson_response = GeoJSONFormatter.format_spatial_locations(flattened_data, country_code)
+    geojson_response = GeoJSONFormatter.format_spatial_locations(data, country_code)
 
     # Build base URL and add pagination links
     base_url = str(request.base_url).rstrip('')
@@ -138,92 +130,53 @@ async def get_latest_measurements_items(
     Returns:
         GeoJSON FeatureCollection with latest measurements
     """
-    # Build WHERE conditions for filtering BEFORE window function
-    where_conditions = []
+    # View path — JOIN + date filter already baked into the Dremio view
+    VIEW_PATH = "discoData.gold.WISE_SOE.latest.Waterbase_V_LatestMeasurements"
+
+    # Fields to select
+    fields = [
+        "monitoringSiteIdentifier",
+        "monitoringSiteIdentifierScheme",
+        "observedPropertyDeterminandCode",
+        "observedPropertyDeterminandLabel",
+        "phenomenonTimeSamplingDate",
+        "resultObservedValue",
+        "resultUom",
+        "countryCode",
+        "lat",
+        "lon",
+        "monitoringSiteName"
+    ]
+
+    # Build filters
+    filters = []
 
     if country_code:
-        where_conditions.append(f"w.countryCode = '{country_code}'")
+        filters.append({"fieldName": "countryCode", "condition": "=", "values": [country_code], "concat": "AND"})
 
     if bbox:
         min_lon, min_lat, max_lon, max_lat = validate_bbox(bbox)
-        where_conditions.append(f"s.lon BETWEEN {min_lon} AND {max_lon}")
-        where_conditions.append(f"s.lat BETWEEN {min_lat} AND {max_lat}")
+        filters.append({"fieldName": "lon", "condition": ">=", "values": [str(min_lon)], "concat": "AND"})
+        filters.append({"fieldName": "lon", "condition": "<=", "values": [str(max_lon)], "concat": "AND"})
+        filters.append({"fieldName": "lat", "condition": ">=", "values": [str(min_lat)], "concat": "AND"})
+        filters.append({"fieldName": "lat", "condition": "<=", "values": [str(max_lat)], "concat": "AND"})
 
-    # Always filter for non-null coordinates and dates
-    where_conditions.append("s.lat IS NOT NULL")
-    where_conditions.append("s.lon IS NOT NULL")
-    where_conditions.append("w.phenomenonTimeSamplingDate IS NOT NULL")
+    # Get data with pagination — middleware returns a flat list of dicts
+    result = data_service.execute_view_query(VIEW_PATH, fields, filters, limit=limit, offset=offset)
+    data = result if isinstance(result, list) else flatten_dremio_data(result)
 
-    # Add date range filter to reduce dataset (last 5 years by default)
-    where_conditions.append("w.phenomenonTimeSamplingDate >= CAST('2019-01-01' AS DATE)")
+    total_count = len(data)
 
-    where_clause = "WHERE " + " AND ".join(where_conditions) if where_conditions else ""
-
-    # Highly optimized query - use MAX aggregate instead of ROW_NUMBER
-    # This is much faster as it doesn't need to sort/rank all rows
-    # Build final WHERE conditions for the outer query
-    final_where = []
-    if country_code:
-        final_where.append(f"w.countryCode = '{country_code}'")
-    final_where.append("s.lat IS NOT NULL")
-    final_where.append("s.lon IS NOT NULL")
-
-    if bbox:
-        min_lon, min_lat, max_lon, max_lat = validate_bbox(bbox)
-        final_where.append(f"s.lon BETWEEN {min_lon} AND {max_lon}")
-        final_where.append(f"s.lat BETWEEN {min_lat} AND {max_lat}")
-
-    final_where_clause = "WHERE " + " AND ".join(final_where)
-
-    query = f"""
-    WITH latest_dates AS (
-        SELECT
-            w.monitoringSiteIdentifier,
-            w.observedPropertyDeterminandCode,
-            MAX(w.phenomenonTimeSamplingDate) as max_date
-        FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_T_WISE6_DisaggregatedData" w
-        INNER JOIN "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_S_WISE_SpatialObject_DerivedData" s
-            ON w.monitoringSiteIdentifier = s.thematicIdIdentifier
-            AND w.monitoringSiteIdentifierScheme = s.thematicIdIdentifierScheme
-        {where_clause}
-        GROUP BY w.monitoringSiteIdentifier, w.observedPropertyDeterminandCode
-    )
-    SELECT
-        w.monitoringSiteIdentifier,
-        w.monitoringSiteIdentifierScheme,
-        w.observedPropertyDeterminandCode,
-        w.observedPropertyDeterminandLabel,
-        w.phenomenonTimeSamplingDate,
-        w.resultObservedValue,
-        w.resultUom,
-        w.countryCode,
-        s.lat as coordinate_latitude,
-        s.lon as coordinate_longitude,
-        s.monitoringSiteName as coordinate_siteName
-    FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_T_WISE6_DisaggregatedData" w
-    INNER JOIN latest_dates ld
-        ON w.monitoringSiteIdentifier = ld.monitoringSiteIdentifier
-        AND w.observedPropertyDeterminandCode = ld.observedPropertyDeterminandCode
-        AND w.phenomenonTimeSamplingDate = ld.max_date
-    INNER JOIN "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_S_WISE_SpatialObject_DerivedData" s
-        ON w.monitoringSiteIdentifier = s.thematicIdIdentifier
-        AND w.monitoringSiteIdentifierScheme = s.thematicIdIdentifierScheme
-    {final_where_clause}
-    """
-
-    # Skip COUNT query for performance - use estimated count instead
-    # For latest-measurements, exact count is less important than speed
-    total_count = -1  # -1 indicates unknown/not calculated
-
-    # Add pagination to main query
-    query += f" LIMIT {limit} OFFSET {offset}"
-
-    result = data_service.execute_query(query)
-    flattened_data = flatten_dremio_data(result)
-    enriched_data = format_optimized_coordinates(flattened_data)
+    # Rename lat/lon/monitoringSiteName to match coordinate format expected by GeoJSON formatter
+    for item in data:
+        item['coordinates'] = {
+            'latitude': item.pop('lat', None),
+            'longitude': item.pop('lon', None)
+        }
+        item['coordinate_siteName'] = item.pop('monitoringSiteName', None)
 
     # Convert to GeoJSON
-    geojson_response = GeoJSONFormatter.format_measurements_with_location(enriched_data)
+    geojson_response = GeoJSONFormatter.format_measurements_with_location(data)
 
     # Build base URL and add pagination links
     base_url = str(request.base_url).rstrip('/')
@@ -276,61 +229,54 @@ async def get_disaggregated_data_items(
     Returns:
         GeoJSON FeatureCollection with disaggregated water quality data
     """
-    # Build WHERE conditions first for optimal filtering
-    where_conditions = []
+    # View path — JOIN baked into the Dremio view (no WHERE in view)
+    VIEW_PATH = "discoData.gold.WISE_SOE.latest.Waterbase_V_DisaggregatedData"
+
+    # Fields to select
+    fields = [
+        "monitoringSiteIdentifier",
+        "monitoringSiteIdentifierScheme",
+        "observedPropertyDeterminandCode",
+        "observedPropertyDeterminandLabel",
+        "phenomenonTimeSamplingDate",
+        "resultObservedValue",
+        "resultUom",
+        "countryCode",
+        "parameterWaterBodyCategory",
+        "lat",
+        "lon",
+        "monitoringSiteName"
+    ]
+
+    # Build filters
+    filters = []
 
     if country_code:
-        where_conditions.append(f"w.countryCode = '{country_code}'")
+        filters.append({"fieldName": "countryCode", "condition": "=", "values": [country_code], "concat": "AND"})
 
     if bbox:
         min_lon, min_lat, max_lon, max_lat = validate_bbox(bbox)
-        where_conditions.append(f"s.lon BETWEEN {min_lon} AND {max_lon}")
-        where_conditions.append(f"s.lat BETWEEN {min_lat} AND {max_lat}")
+        filters.append({"fieldName": "lon", "condition": ">=", "values": [str(min_lon)], "concat": "AND"})
+        filters.append({"fieldName": "lon", "condition": "<=", "values": [str(max_lon)], "concat": "AND"})
+        filters.append({"fieldName": "lat", "condition": ">=", "values": [str(min_lat)], "concat": "AND"})
+        filters.append({"fieldName": "lat", "condition": "<=", "values": [str(max_lat)], "concat": "AND"})
 
-    # Always filter for non-null coordinates
-    where_conditions.append("s.lat IS NOT NULL")
-    where_conditions.append("s.lon IS NOT NULL")
+    # Get data with pagination — middleware returns a flat list of dicts
+    result = data_service.execute_view_query(VIEW_PATH, fields, filters, limit=limit, offset=offset)
+    data = result if isinstance(result, list) else flatten_dremio_data(result)
 
-    # Add date range filter to reduce dataset (last 5 years by default)
-    where_conditions.append("w.phenomenonTimeSamplingDate >= CAST('2019-01-01' AS DATE)")
+    total_count = len(data)
 
-    where_clause = "WHERE " + " AND ".join(where_conditions) if where_conditions else ""
-
-    # Optimized query - select only needed columns, use INNER JOIN and filter early
-    query = f"""
-    SELECT
-        w.monitoringSiteIdentifier,
-        w.monitoringSiteIdentifierScheme,
-        w.observedPropertyDeterminandCode,
-        w.observedPropertyDeterminandLabel,
-        w.phenomenonTimeSamplingDate,
-        w.resultObservedValue,
-        w.resultUom,
-        w.countryCode,
-        w.parameterWaterBodyCategory,
-        s.lat as coordinate_latitude,
-        s.lon as coordinate_longitude,
-        s.monitoringSiteName as coordinate_siteName
-    FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_T_WISE6_DisaggregatedData" w
-    INNER JOIN "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_S_WISE_SpatialObject_DerivedData" s
-        ON w.monitoringSiteIdentifier = s.thematicIdIdentifier
-        AND w.monitoringSiteIdentifierScheme = s.thematicIdIdentifierScheme
-    {where_clause}
-    ORDER BY w.phenomenonTimeSamplingDate DESC
-    """
-
-    # Skip COUNT query for performance - disaggregated data can have millions of rows
-    total_count = -1  # -1 indicates unknown/not calculated
-
-    # Add pagination to main query
-    query += f" LIMIT {limit} OFFSET {offset}"
-
-    result = data_service.execute_query(query)
-    flattened_data = flatten_dremio_data(result)
-    enriched_data = format_optimized_coordinates(flattened_data)
+    # Rename lat/lon/monitoringSiteName to match coordinate format expected by GeoJSON formatter
+    for item in data:
+        item['coordinates'] = {
+            'latitude': item.pop('lat', None),
+            'longitude': item.pop('lon', None)
+        }
+        item['coordinate_siteName'] = item.pop('monitoringSiteName', None)
 
     # Convert to GeoJSON
-    geojson_response = GeoJSONFormatter.format_measurements_with_location(enriched_data)
+    geojson_response = GeoJSONFormatter.format_measurements_with_location(data)
 
     # Build base URL and add pagination links
     base_url = str(request.base_url).rstrip('/')

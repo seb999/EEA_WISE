@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Query
 from typing import Optional, Dict, Any
 from datetime import datetime
 
-from ..utils import validate_bbox, flatten_dremio_data
+from ..utils import validate_bbox
 from ..geojson_formatter import GeoJSONFormatter
 
 # Create router
@@ -55,35 +55,38 @@ async def get_ogc_spatial_locations(
                 detail="Data service not available"
             )
 
-        # Build query for spatial locations
-        base_query = '''
-        SELECT
-            thematicIdIdentifier,
-            thematicIdIdentifierScheme,
-            lat as latitude,
-            lon as longitude,
-            monitoringSiteIdentifier,
-            monitoringSiteName,
-            countryCode
-        FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_S_WISE_SpatialObject_DerivedData"
-        WHERE lat IS NOT NULL AND lon IS NOT NULL
-        '''
+        VIEW_PATH = "discoData.gold.WISE_SOE.latest.Waterbase_V_MonitoringSites"
+        fields = [
+            "thematicIdIdentifier",
+            "thematicIdIdentifierScheme",
+            "lat",
+            "lon",
+            "monitoringSiteIdentifier",
+            "monitoringSiteName",
+            "countryCode"
+        ]
 
-        # Add country filter
+        filters = []
+
         if country_code:
-            base_query += f" AND UPPER(countryCode) = UPPER('{country_code}')"
+            filters.append({"fieldName": "countryCode", "condition": "=", "values": [country_code.upper()], "concat": "AND"})
 
-        # Add bounding box filter if provided
         if bbox:
             min_lon, min_lat, max_lon, max_lat = validate_bbox(bbox)
-            base_query += f" AND lon >= {min_lon} AND lon <= {max_lon}"
-            base_query += f" AND lat >= {min_lat} AND lat <= {max_lat}"
+            filters.append({"fieldName": "lon", "condition": ">=", "values": [min_lon], "concat": "AND"})
+            filters.append({"fieldName": "lon", "condition": "<=", "values": [max_lon], "concat": "AND"})
+            filters.append({"fieldName": "lat", "condition": ">=", "values": [min_lat], "concat": "AND"})
+            filters.append({"fieldName": "lat", "condition": "<=", "values": [max_lat], "concat": "AND"})
 
-        base_query += f" LIMIT {limit}"
+        result = data_service.execute_view_query(VIEW_PATH, fields, filters, limit=limit)
+        flattened_data = result if isinstance(result, list) else []
 
-        # Execute query
-        result = data_service.execute_query(base_query)
-        flattened_data = flatten_dremio_data(result)
+        # Rename lat/lon to latitude/longitude for GeoJSON formatter
+        for item in flattened_data:
+            if "lat" in item:
+                item["latitude"] = item.pop("lat")
+            if "lon" in item:
+                item["longitude"] = item.pop("lon")
 
         # Convert to GeoJSON
         geojson_response = GeoJSONFormatter.format_spatial_locations(

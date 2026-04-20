@@ -8,7 +8,7 @@ monitoring sites, and other metadata about the water quality database.
 from fastapi import APIRouter, HTTPException
 from typing import Dict, Any
 
-from ..utils import flatten_dremio_data
+from ..utils import flatten_dremio_data  # kept for backward compatibility
 
 # Create router
 router = APIRouter()
@@ -38,14 +38,13 @@ async def get_available_parameters() -> Dict[str, Any]:
                 detail="Data service not available"
             )
 
-        result = data_service.get_available_parameters()
-        flattened_data = flatten_dremio_data(result)
+        data = data_service.get_available_parameters()
 
         return {
             "success": True,
-            "data": flattened_data,
+            "data": data,
             "metadata": {
-                "total_parameters": len(flattened_data),
+                "total_parameters": len(data),
                 "description": "Available chemical parameters in the WISE database"
             }
         }

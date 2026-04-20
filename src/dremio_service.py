@@ -74,6 +74,8 @@ class DremioApiService:
                 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
             self.token = None
+            self.owner_name = os.getenv('MIDDLEWARE_OWNER_NAME', 'WISE_SOE')
+            self._view_id_cache = {}  # path -> view _id cache
             print(f"DEBUG: Initialized in MIDDLEWARE mode, endpoint: {self.middleware_url}")
 
         else:  # Direct Dremio mode
@@ -326,17 +328,161 @@ class DremioApiService:
         except requests.exceptions.RequestException as e:
             raise Exception(f"Query execution failed: {str(e)}")
 
+    def _resolve_view_id(self, view_path: str) -> str:
+        """Resolve a view path to its MongoDB id via the middleware API, with caching.
+
+        view_path is a dot-separated path; the last segment is matched against view names.
+        e.g. 'discoData.gold.WISE_SOE.latest.Waterbase_V_MonitoringSites' → 'Waterbase_V_MonitoringSites'
+        """
+        if view_path in self._view_id_cache:
+            return self._view_id_cache[view_path]
+
+        view_name = view_path.split('.')[-1]
+
+        headers = {
+            'User-Agent': 'EEA-Dremio-Client/1.0',
+            'Accept': 'application/json'
+        }
+
+        # Step 1: get owner ID — response is a list of owner objects
+        owners_url = f"{self.middleware_url}/api/data-products/owners"
+        resp = requests.get(owners_url, headers=headers, verify=self.ssl, timeout=self.timeout)
+        resp.raise_for_status()
+        owners = resp.json()
+        # Handle both list and single-object responses
+        if isinstance(owners, dict):
+            owners = [owners]
+        owner_id = None
+        for owner in owners:
+            if owner.get('owner') == self.owner_name or owner.get('name') == self.owner_name:
+                owner_id = str(owner.get('id') or owner.get('_id'))
+                break
+        if not owner_id:
+            raise Exception(f"Owner '{self.owner_name}' not found. Available: {[o.get('owner') or o.get('name') for o in owners]}")
+
+        # Step 2: get views for that owner — response is {"id":..., "owner":..., "views":[...]}
+        views_url = f"{self.middleware_url}/api/data-products/views?ownerId={owner_id}"
+        resp = requests.get(views_url, headers=headers, verify=self.ssl, timeout=self.timeout)
+        resp.raise_for_status()
+        data = resp.json()
+        views = data.get('views', []) if isinstance(data, dict) else data
+
+        # Cache all views by name so future calls don't re-fetch
+        for view in views:
+            name = view.get('name')
+            vid = str(view.get('id') or view.get('_id'))
+            if name:
+                self._view_id_cache[name] = vid
+
+        if view_name not in self._view_id_cache:
+            available = [v.get('name') for v in views]
+            raise Exception(f"View '{view_name}' not found. Available: {available}")
+
+        # Also cache by full path for future lookups
+        self._view_id_cache[view_path] = self._view_id_cache[view_name]
+        print(f"DEBUG: Resolved view '{view_name}' → id={self._view_id_cache[view_path]}")
+        return self._view_id_cache[view_path]
+
+    def execute_view_query(self,
+                           view_path: str,
+                           fields: list,
+                           filters: list = None,
+                           limit: Optional[int] = None,
+                           offset: Optional[int] = None,
+                           aggregates: list = None,
+                           group_by: list = None) -> Dict[str, Any]:
+        """
+        Execute a structured query against a Dremio view via the middleware
+        data-product endpoint.
+
+        Args:
+            view_path: Dot-separated view path
+            fields: List of field names to select
+            filters: List of filter dicts with keys: fieldName, condition, values, concat
+            limit: Maximum number of rows to return
+            offset: Number of rows to skip
+            aggregates: List of aggregate dicts with keys: function, field, alias (and granularity for DATE_TRUNC)
+            group_by: List of field names to group by
+
+        Returns:
+            List or dictionary containing query results
+        """
+        view_id = self._resolve_view_id(view_path)
+        query_url = f"{self.middleware_url}/api/data-products/views/{view_id}"
+
+        payload = {
+            "fields": fields,
+            "filters": filters or []
+        }
+        if limit is not None:
+            payload["limit"] = limit
+        if offset is not None:
+            payload["offset"] = offset
+        if aggregates:
+            payload["aggregates"] = aggregates
+        if group_by:
+            payload["groupBy"] = group_by
+
+        try:
+            query_timeout = self.timeout * 3
+            print(f"DEBUG: Executing VIEW query to {query_url}")
+            print(f"DEBUG: Payload: {payload}")
+
+            response = requests.post(
+                query_url,
+                json=payload,
+                headers={
+                    'User-Agent': 'EEA-Dremio-Client/1.0',
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                },
+                timeout=query_timeout,
+                verify=self.ssl
+            )
+
+            print(f"DEBUG: Response status: {response.status_code}")
+
+            if not response.ok:
+                print(f"DEBUG: View query error: {response.status_code} - {response.text}")
+                try:
+                    error_detail = response.json()
+                    error_msg = error_detail.get('errorMessage', response.text)
+                except Exception:
+                    error_msg = response.text
+                raise Exception(f"View query API error {response.status_code}: {error_msg}")
+
+            result = response.json()
+            print(f"DEBUG: View query response type: {type(result)}")
+            if isinstance(result, dict):
+                print(f"DEBUG: View query response keys: {list(result.keys())}")
+                print(f"DEBUG: View query returned {len(result.get('rows', []))} rows")
+            elif isinstance(result, list):
+                print(f"DEBUG: View query returned list with {len(result)} items")
+                if result:
+                    print(f"DEBUG: First item keys: {list(result[0].keys()) if isinstance(result[0], dict) else result[0]}")
+
+            return result
+
+        except requests.exceptions.Timeout as e:
+            raise Exception(f"View query timed out: {str(e)}")
+        except requests.exceptions.ConnectionError as e:
+            raise Exception(f"Connection error to middleware: {str(e)}")
+        except requests.exceptions.RequestException as e:
+            raise Exception(f"View query failed: {str(e)}")
+
     def get_timeseries_by_site(self,
                               site_identifier: str,
                               parameter_code: Optional[str] = None,
                               start_date: Optional[str] = None,
                               end_date: Optional[str] = None,
                               interval: str = 'raw',
-                              include_coordinates: bool = False) -> Dict[str, Any]:
+                              **kwargs) -> list:
         """
         Get time-series data for a specific monitoring site with optional aggregation.
 
-        Used by: /timeseries/site/{site_identifier} endpoint
+        Uses the middleware view query endpoint for all intervals.
+        Raw: direct query on the view.
+        Monthly/Yearly: uses aggregates and groupBy via the middleware.
 
         Args:
             site_identifier: Monitoring site identifier
@@ -347,192 +493,105 @@ class DremioApiService:
             include_coordinates: Whether to include GPS coordinates via JOIN
 
         Returns:
-            Dictionary containing time-series data
+            List of dictionaries containing time-series data
         """
+        VIEW_PATH = "discoData.gold.WISE_SOE.latest.Waterbase_V_Timeseries"
+
+        # Build filters (same for all intervals)
+        filters = [
+            {"fieldName": "monitoringSiteIdentifier", "condition": "=", "values": [site_identifier], "concat": "AND"}
+        ]
+
+        if parameter_code:
+            filters.append({"fieldName": "observedPropertyDeterminandCode", "condition": "=", "values": [parameter_code], "concat": "OR"})
+            filters.append({"fieldName": "observedPropertyDeterminandLabel", "condition": "=", "values": [parameter_code], "concat": "AND"})
+
+        if start_date:
+            # Support year-only input (e.g., '2020' -> '2020-01-01')
+            if len(start_date) == 4:
+                start_date = f"{start_date}-01-01"
+            filters.append({"fieldName": "phenomenonTimeSamplingDate", "condition": ">=", "values": [start_date], "concat": "AND"})
+
+        if end_date:
+            # Support year-only input (e.g., '2023' -> '2023-12-31')
+            if len(end_date) == 4:
+                end_date = f"{end_date}-12-31"
+            filters.append({"fieldName": "phenomenonTimeSamplingDate", "condition": "<=", "values": [end_date], "concat": "AND"})
+
         if interval == 'raw':
-            # Raw data without aggregation
-            if include_coordinates:
-                base_query = '''
-                SELECT w.*,
-                       s.lat as coordinate_latitude,
-                       s.lon as coordinate_longitude,
-                       s.thematicIdIdentifier as coordinate_thematic_identifier,
-                       s.thematicIdIdentifierScheme as coordinate_thematic_scheme,
-                       s.monitoringSiteName as coordinate_site_name
-                FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_T_WISE6_DisaggregatedData" w
-                LEFT JOIN "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_S_WISE_SpatialObject_DerivedData" s
-                    ON w.monitoringSiteIdentifier = s.thematicIdIdentifier
-                    AND w.monitoringSiteIdentifierScheme = s.thematicIdIdentifierScheme
-                    AND s.lat IS NOT NULL
-                    AND s.lon IS NOT NULL
-                '''
+            fields = [
+                "monitoringSiteIdentifier", "monitoringSiteIdentifierScheme", "countryCode",
+                "observedPropertyDeterminandCode", "observedPropertyDeterminandLabel", "resultUom",
+                "phenomenonTimeSamplingDate", "resultObservedValue",
+                "lat", "lon", "thematicIdIdentifier", "thematicIdIdentifierScheme", "monitoringSiteName"
+            ]
+
+            print(f"DEBUG: Time-series raw query for site {site_identifier}")
+            result = self.execute_view_query(VIEW_PATH, fields, filters, limit=10000)
+
+        elif interval in ('monthly', 'yearly'):
+            group_fields = [
+                "monitoringSiteIdentifier", "monitoringSiteIdentifierScheme", "countryCode",
+                "observedPropertyDeterminandCode", "observedPropertyDeterminandLabel", "resultUom",
+                "lat", "lon", "monitoringSiteName"
+            ]
+
+            aggregates = [
+                {"function": "AVG", "field": "resultObservedValue", "alias": "avg_value"},
+                {"function": "MIN", "field": "resultObservedValue", "alias": "min_value"},
+                {"function": "MAX", "field": "resultObservedValue", "alias": "max_value"},
+                {"function": "COUNT", "field": "*", "alias": "sample_count"}
+            ]
+
+            if interval == 'monthly':
+                aggregates.append({"function": "DATE_TRUNC", "field": "phenomenonTimeSamplingDate", "granularity": "month", "alias": "time_period"})
             else:
-                base_query = 'SELECT * FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_T_WISE6_DisaggregatedData"'
+                aggregates.append({"function": "DATE_TRUNC", "field": "phenomenonTimeSamplingDate", "granularity": "year", "alias": "time_period"})
 
-        elif interval == 'monthly':
-            # Monthly aggregation
-            coord_join = '''
-            LEFT JOIN "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_S_WISE_SpatialObject_DerivedData" s
-                ON w.monitoringSiteIdentifier = s.thematicIdIdentifier
-                AND w.monitoringSiteIdentifierScheme = s.thematicIdIdentifierScheme
-                AND s.lat IS NOT NULL
-                AND s.lon IS NOT NULL
-            ''' if include_coordinates else ''
+            group_by = group_fields + ["time_period"]
 
-            coord_select = '''
-                s.lat as coordinate_latitude,
-                s.lon as coordinate_longitude,
-                s.thematicIdIdentifier as coordinate_thematic_identifier,
-                s.thematicIdIdentifierScheme as coordinate_thematic_scheme,
-                s.monitoringSiteName as coordinate_site_name,
-            ''' if include_coordinates else ''
-
-            base_query = f'''
-            SELECT
-                w.monitoringSiteIdentifier,
-                w.monitoringSiteIdentifierScheme,
-                w.countryCode,
-                w.observedPropertyDeterminandCode,
-                w.observedPropertyDeterminandLabel,
-                w.resultUom,
-                DATE_TRUNC('month', w.phenomenonTimeSamplingDate) as time_period,
-                AVG(CAST(w.resultObservedValue AS DOUBLE)) as avg_value,
-                MIN(CAST(w.resultObservedValue AS DOUBLE)) as min_value,
-                MAX(CAST(w.resultObservedValue AS DOUBLE)) as max_value,
-                COUNT(*) as sample_count,
-                {coord_select}
-                'monthly' as aggregation_interval
-            FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_T_WISE6_DisaggregatedData" w
-            {coord_join}
-            '''
-
-        elif interval == 'yearly':
-            # Yearly aggregation
-            coord_join = '''
-            LEFT JOIN "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_S_WISE_SpatialObject_DerivedData" s
-                ON w.monitoringSiteIdentifier = s.thematicIdIdentifier
-                AND w.monitoringSiteIdentifierScheme = s.thematicIdIdentifierScheme
-                AND s.lat IS NOT NULL
-                AND s.lon IS NOT NULL
-            ''' if include_coordinates else ''
-
-            coord_select = '''
-                s.lat as coordinate_latitude,
-                s.lon as coordinate_longitude,
-                s.thematicIdIdentifier as coordinate_thematic_identifier,
-                s.thematicIdIdentifierScheme as coordinate_thematic_scheme,
-                s.monitoringSiteName as coordinate_site_name,
-            ''' if include_coordinates else ''
-
-            base_query = f'''
-            SELECT
-                w.monitoringSiteIdentifier,
-                w.monitoringSiteIdentifierScheme,
-                w.countryCode,
-                w.observedPropertyDeterminandCode,
-                w.observedPropertyDeterminandLabel,
-                w.resultUom,
-                w.phenomenonTimeSamplingDate_year as time_period,
-                AVG(CAST(w.resultObservedValue AS DOUBLE)) as avg_value,
-                MIN(CAST(w.resultObservedValue AS DOUBLE)) as min_value,
-                MAX(CAST(w.resultObservedValue AS DOUBLE)) as max_value,
-                COUNT(*) as sample_count,
-                {coord_select}
-                'yearly' as aggregation_interval
-            FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_T_WISE6_DisaggregatedData" w
-            {coord_join}
-            '''
+            print(f"DEBUG: Time-series {interval} query for site {site_identifier}")
+            result = self.execute_view_query(
+                VIEW_PATH, group_fields, filters, limit=10000,
+                aggregates=aggregates, group_by=group_by
+            )
         else:
             raise ValueError(f"Unsupported interval: {interval}")
 
-        # Build WHERE clause with proper table aliases
-        if interval == 'raw' and include_coordinates:
-            where_conditions = [f"w.monitoringSiteIdentifier = '{site_identifier}'"]
-            if parameter_code:
-                where_conditions.append(f"w.observedPropertyDeterminandCode = '{parameter_code}'")
-            if start_date:
-                where_conditions.append(f"w.phenomenonTimeSamplingDate >= '{start_date}'")
-            if end_date:
-                where_conditions.append(f"w.phenomenonTimeSamplingDate <= '{end_date}'")
-        elif interval == 'raw':
-            where_conditions = [f"monitoringSiteIdentifier = '{site_identifier}'"]
-            if parameter_code:
-                where_conditions.append(f"observedPropertyDeterminandCode = '{parameter_code}'")
-            if start_date:
-                where_conditions.append(f"phenomenonTimeSamplingDate >= '{start_date}'")
-            if end_date:
-                where_conditions.append(f"phenomenonTimeSamplingDate <= '{end_date}'")
-        else:
-            where_conditions = [f"w.monitoringSiteIdentifier = '{site_identifier}'"]
-            if parameter_code:
-                where_conditions.append(f"w.observedPropertyDeterminandCode = '{parameter_code}'")
-            if start_date:
-                where_conditions.append(f"w.phenomenonTimeSamplingDate >= '{start_date}'")
-            if end_date:
-                where_conditions.append(f"w.phenomenonTimeSamplingDate <= '{end_date}'")
+        # Normalize result to list
+        data = result if isinstance(result, list) else []
 
-        query = f"{base_query} WHERE {' AND '.join(where_conditions)}"
+        # Rename coordinate fields to match expected format
+        for item in data:
+            item['coordinate_latitude'] = item.pop('lat', None)
+            item['coordinate_longitude'] = item.pop('lon', None)
+            item['coordinate_thematic_identifier'] = item.pop('thematicIdIdentifier', None)
+            item['coordinate_thematic_scheme'] = item.pop('thematicIdIdentifierScheme', None)
+            item['coordinate_site_name'] = item.pop('monitoringSiteName', None)
 
-        # Add GROUP BY for aggregated queries
-        if interval == 'monthly':
-            group_cols = [
-                'w.monitoringSiteIdentifier', 'w.monitoringSiteIdentifierScheme', 'w.countryCode',
-                'w.observedPropertyDeterminandCode', 'w.observedPropertyDeterminandLabel', 'w.resultUom',
-                'DATE_TRUNC(\'month\', w.phenomenonTimeSamplingDate)'
-            ]
-            if include_coordinates:
-                group_cols.extend([
-                    's.lat', 's.lon', 's.thematicIdIdentifier',
-                    's.thematicIdIdentifierScheme', 's.monitoringSiteName'
-                ])
-            query += f" GROUP BY {', '.join(group_cols)}"
+        return data
 
-        elif interval == 'yearly':
-            group_cols = [
-                'w.monitoringSiteIdentifier', 'w.monitoringSiteIdentifierScheme', 'w.countryCode',
-                'w.observedPropertyDeterminandCode', 'w.observedPropertyDeterminandLabel', 'w.resultUom',
-                'w.phenomenonTimeSamplingDate_year'
-            ]
-            if include_coordinates:
-                group_cols.extend([
-                    's.lat', 's.lon', 's.thematicIdIdentifier',
-                    's.thematicIdIdentifierScheme', 's.monitoringSiteName'
-                ])
-            query += f" GROUP BY {', '.join(group_cols)}"
-
-        # Order by time descending
-        if interval == 'raw':
-            query += " ORDER BY w.phenomenonTimeSamplingDate DESC" if include_coordinates else " ORDER BY phenomenonTimeSamplingDate DESC"
-        else:
-            query += " ORDER BY time_period DESC"
-
-        query += " LIMIT 10000"  # Reasonable limit for time-series data
-
-        print(f"DEBUG: Time-series query for site {site_identifier}: {query}")
-        return self.execute_query(query)
-
-    def get_available_parameters(self) -> Dict[str, Any]:
+    def get_available_parameters(self) -> list:
         """
         Get list of available chemical parameters with metadata.
 
         Used by: /parameters endpoint
 
         Returns:
-            Dictionary containing available parameters with measurement counts
+            List of dictionaries containing available parameters with measurement counts
         """
-        query = '''
-        SELECT DISTINCT
-            observedPropertyDeterminandCode,
-            observedPropertyDeterminandLabel,
-            resultUom,
-            COUNT(*) as measurement_count
-        FROM "Local S3"."datahub-pre-01".discodata."WISE_SOE".latest."Waterbase_T_WISE6_DisaggregatedData"
-        GROUP BY observedPropertyDeterminandCode, observedPropertyDeterminandLabel, resultUom
-        ORDER BY observedPropertyDeterminandLabel
-        '''
+        VIEW_PATH = "discoData.gold.WISE_SOE.latest.Waterbase_V_Parameters"
+
+        fields = [
+            "observedPropertyDeterminandCode",
+            "observedPropertyDeterminandLabel",
+            "resultUom",
+            "measurement_count"
+        ]
 
         print("DEBUG: Getting available parameters")
-        return self.execute_query(query)
+        result = self.execute_view_query(VIEW_PATH, fields)
+        return result if isinstance(result, list) else []
 
     def close(self) -> None:
         """Close the session."""
