@@ -575,7 +575,7 @@ class DremioApiService:
         """
         Get list of available chemical parameters with metadata.
 
-        Used by: /parameters endpoint
+        Used by: /parameters endpoint1
 
         Returns:
             List of dictionaries containing available parameters with measurement counts
