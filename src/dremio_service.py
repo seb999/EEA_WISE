@@ -361,7 +361,7 @@ class DremioApiService:
             raise Exception(f"Owner '{self.owner_name}' not found. Available: {[o.get('owner') or o.get('name') for o in owners]}")
 
         # Step 2: get views for that owner — response is {"id":..., "owner":..., "views":[...]}
-        views_url = f"{self.middleware_url}/api/data-products/views?ownerId={owner_id}"
+        views_url = f"{self.middleware_url}/api/data-products/owners/{owner_id}/views"
         resp = requests.get(views_url, headers=headers, verify=self.ssl, timeout=self.timeout)
         resp.raise_for_status()
         data = resp.json()
@@ -408,7 +408,7 @@ class DremioApiService:
             List or dictionary containing query results
         """
         view_id = self._resolve_view_id(view_path)
-        query_url = f"{self.middleware_url}/api/data-products/views/{view_id}"
+        query_url = f"{self.middleware_url}/api/data-products/views/{view_id}/data"
 
         payload = {
             "fields": fields,
@@ -527,7 +527,7 @@ class DremioApiService:
             ]
 
             print(f"DEBUG: Time-series raw query for site {site_identifier}")
-            result = self.execute_view_query(VIEW_PATH, fields, filters, limit=10000)
+            result = self.execute_view_query(VIEW_PATH, fields, filters, limit=50000)
 
         elif interval in ('monthly', 'yearly'):
             group_fields = [
@@ -552,7 +552,7 @@ class DremioApiService:
 
             print(f"DEBUG: Time-series {interval} query for site {site_identifier}")
             result = self.execute_view_query(
-                VIEW_PATH, group_fields, filters, limit=10000,
+                VIEW_PATH, group_fields, filters, limit=50000,
                 aggregates=aggregates, group_by=group_by
             )
         else:

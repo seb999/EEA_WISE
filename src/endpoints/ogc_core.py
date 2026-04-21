@@ -551,7 +551,7 @@ async def get_collection(collection_id: str, request: Request) -> Dict[str, Any]
 async def get_collection_items(
     collection_id: str,
     request: Request,
-    limit: int = Query(1000, ge=1, le=10000, description="Maximum number of items to return"),
+    limit: int = Query(1000, ge=1, le=50000, description="Maximum number of items to return"),
     offset: int = Query(0, ge=0, description="Number of items to skip"),
     bbox: Optional[str] = Query(None, description="Bounding box filter: minLon,minLat,maxLon,maxLat"),
     country_code: Optional[str] = Query(None, description="Filter by ISO country code"),

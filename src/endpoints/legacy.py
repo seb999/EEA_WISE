@@ -28,7 +28,7 @@ def init_router(service):
 @router.get("/ogc/spatial-locations", tags=["Legacy OGC"])
 async def get_ogc_spatial_locations(
     country_code: Optional[str] = Query(None, description="Filter by country code (e.g., 'DE', 'FR')"),
-    limit: int = Query(1000, ge=1, le=10000, description="Maximum number of features to return"),
+    limit: int = Query(1000, ge=1, le=50000, description="Maximum number of features to return"),
     bbox: Optional[str] = Query(None, description="Bounding box filter: minLon,minLat,maxLon,maxLat")
 ) -> Dict[str, Any]:
     """
